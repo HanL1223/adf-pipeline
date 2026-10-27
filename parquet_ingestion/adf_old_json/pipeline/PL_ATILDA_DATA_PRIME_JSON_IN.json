@@ -4,9 +4,69 @@
         "description": "Data prime, part 1 (data in): extract one SQL Server table to JSON part files in <p_Landing_Container>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME_JSON before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
         "activities": [
             {
+                "name": "Clear landing folder",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@pipeline().parameters.p_Clear_Landing",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Delete old part files",
+                            "type": "Delete",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.01:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Folder": {
+                                            "value": "@pipeline().parameters.p_Source_Path",
+                                            "type": "Expression"
+                                        },
+                                        "Container": {
+                                            "value": "@pipeline().parameters.p_Landing_Container",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "enableLogging": false,
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": false,
+                                    "wildcardFileName": {
+                                        "value": "@concat(pipeline().parameters.p_File_Prefix, '_part_*.json')",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                },
+                "description": "Removes this object's part files from earlier runs (SOURCE_PATH is the object's own folder)."
+            },
+            {
                 "name": "Extract batches",
                 "type": "ForEach",
-                "dependsOn": [],
+                "dependsOn": [
+                    {
+                        "activity": "Clear landing folder",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
                 "userProperties": [],
                 "typeProperties": {
                     "items": {
@@ -168,6 +228,10 @@
             },
             "p_Batches": {
                 "type": "array"
+            },
+            "p_Clear_Landing": {
+                "type": "bool",
+                "defaultValue": false
             },
             "p_Landing_Container": {
                 "type": "string",

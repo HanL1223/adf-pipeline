@@ -291,8 +291,16 @@ def data_in():
                             f"@{{{p('p_File_Prefix')}}}_part_@{{{p('p_Run_Id')}}}_b@{{item().BATCH_NO}}_1.json",
                             LANDING)]}
     acts = [
+        if_("Clear landing folder", f"@{p('p_Clear_Landing')}",
+            desc="Removes this object's part files from earlier runs (SOURCE_PATH is the object's own folder).",
+            true=[{"name": "Delete old part files", "type": "Delete", "dependsOn": [],
+                   "policy": policy("0.01:00:00", 2), "userProperties": [],
+                   "typeProperties": {"dataset": bin_ds(f"@{p('p_Source_Path')}"), "enableLogging": False,
+                                      "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
+                                                        "wildcardFileName": E(f"@concat({p('p_File_Prefix')}, "
+                                                                              f"'_part_*{EXT}')")}}}]),
         {"name": "Extract batches", "type": "ForEach",
-         "dependsOn": [],
+         "dependsOn": dep(("Clear landing folder", "Succeeded")),
          "userProperties": [],
          "typeProperties": {"items": E(f"@{p('p_Batches')}"), "isSequential": False,
                             "batchCount": 4, "activities": [
@@ -317,7 +325,7 @@ def data_in():
         "changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
         {"p_Source_Name": sp("string"), "p_Source_Path": sp("string"),
          "p_File_Prefix": sp("string"), "p_Run_Id": sp("string"), "p_Source_Query": sp("string"),
-         "p_Batches": sp("array"),
+         "p_Batches": sp("array"), "p_Clear_Landing": sp("bool", False),
          **container_params()},
         {"vBatch_Rows": {"type": "Array", "defaultValue": []}}, acts)
 
@@ -413,25 +421,16 @@ def parent(tsql):
             depends=[("Get batch ranges", "Succeeded")],
             true=[fail("Raise no rows", f"@concat(item().table, ': no rows in the window; nothing to prime. BRONZE not touched.')",
                        "PRIME_NO_ROWS")]),
-        # Landing folder before Begin: removes earlier runs' part files and proves the landing container is reachable
-        # and writable while nothing has changed yet.
+        # Read probe of the landing container before Begin: a missing container or no read access fails while nothing
+        # has changed. Old part files are cleared by Data in, after the lock.
         {"name": "Check landing folder", "type": "GetMetadata", "dependsOn": dep(("Check batch ranges", "Succeeded")),
          "policy": policy("0.01:00:00", 2), "userProperties": [],
          "typeProperties": {"dataset": bin_ds(f"@{pair}.SOURCE_PATH"), "fieldList": ["exists"],
                             "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False},
                             "formatSettings": {"type": "BinaryReadSettings"}}},
-        if_("Clear landing folder", "@activity('Check landing folder').output.exists",
-            depends=[("Check landing folder", "Succeeded")],
-            desc="Removes this object's part files from earlier runs (SOURCE_PATH is the object's own folder).",
-            true=[{"name": "Delete old part files", "type": "Delete", "dependsOn": [],
-                   "policy": policy("0.01:00:00", 2), "userProperties": [],
-                   "typeProperties": {"dataset": bin_ds(f"@{pair}.SOURCE_PATH"), "enableLogging": False,
-                                      "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
-                                                        "wildcardFileName": E(f"@concat({pair}.FILE_PREFIX, "
-                                                                              f"'_part_*{EXT}')")}}}]),
-        sf_lookup("Begin prime", begin_sql, depends=[("Clear landing folder", "Succeeded")],
+        sf_lookup("Begin prime", begin_sql, depends=[("Check landing folder", "Succeeded")],
                   desc="Lock (initial row ACTIVE), abandon its old plans, delta OFF, truncate BRONZE "
-                       "(tools/sf_begin.sql). Everything before this is read-only, except clearing old landing files."),
+                       "(tools/sf_begin.sql). Everything before this is read-only."),
         if_("Check begin", f"@not(equals({begin}.STATUS, {ok}))", depends=[("Begin prime", "Succeeded")],
             true=[fail("Raise begin error", f"@concat(item().table, ': ', {begin}.MESSAGE)", "PRIME_BEGIN_FAILED")]),
         exec_pl("Data in", PL + "_IN", {
@@ -441,6 +440,7 @@ def parent(tsql):
             "p_Run_Id": RUN_ID,
             "p_Source_Query": f"@{cols}.SOURCE_QUERY",
             "p_Batches": "@activity('Get batch ranges').output.value",
+            "p_Clear_Landing": "@activity('Check landing folder').output.exists",
             **container_args()}, depends=[("Check begin", "Succeeded")]),
         exec_pl("Data out", PL + "_OUT", {
             "p_Initial_Meta_Id": f"@string({pair}.INITIAL_META_ID)",
