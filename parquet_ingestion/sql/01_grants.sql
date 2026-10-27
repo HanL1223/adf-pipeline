@@ -1,4 +1,4 @@
--- README step 3. Grants the ADF Snowflake role needs for data priming. No objects are created: the pipeline's
+-- README.md section 4 (step 3.5). Grants the ADF Snowflake role needs for data priming. No objects are created: the pipeline's
 -- control SQL runs inline (tools/sf_*.sql) as the ADF service user's role.
 -- Run the SHOW lines first (read-only). Then an admin runs only the GRANTs that are missing.
 -- DEV_ACCOUNT_ROLE_DATA_INGESTION = role of linked service cw_au_edp_snowflake_wh (dataset DS_Snowflake_Wh), which the

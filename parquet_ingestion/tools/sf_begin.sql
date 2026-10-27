@@ -35,7 +35,7 @@ BEGIN
             -- Delta OFF, then re-check: a delta run may have planned since 'Check pair'. Skipped in test mode.
             IF (NOT {{TEST_MODE}}) THEN
                 UPDATE EDP_DEV.CONTROL.EXTRACT_META SET ACTIVE_FLAG = FALSE WHERE EXTRACT_META_ID = {{DELTA}};
-                SELECT COUNT(*), COALESCE(MAX(EXTRACT_RUN_PLAN_ID), 0) INTO :cnt, :v_maxplan
+                SELECT COALESCE(MAX(EXTRACT_RUN_PLAN_ID), 0) INTO :v_maxplan
                 FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW WHERE EXTRACT_META_ID = {{DELTA}};
                 SELECT COUNT(*) INTO :cnt FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW
                 WHERE EXTRACT_META_ID = {{DELTA}} AND EXTRACT_RUN_PLAN_STATUS = 'PLANNED';

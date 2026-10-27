@@ -1,3 +1,5 @@
+-- 'Get source columns' Lookup: raw SELECT list (the delta's text), one batch per p_Rows_Per_File rows (each batch is
+-- one JSON file).
 SET NOCOUNT ON;
 -- Inputs. Each value enters once as a literal and is only compared or parsed, never spliced into SQL.
 DECLARE @obj  nvarchar(512) = N'__OBJ__';    -- delta twin OBJECT_NAME, schema.table
@@ -5,7 +7,7 @@ DECLARE @wcol sysname       = N'__WCOL__';   -- window column, '' = none
 DECLARE @ws   nvarchar(64)  = N'__WS__';     -- window start (inclusive), '' = none
 DECLARE @we   nvarchar(64)  = N'__WE__';     -- window end (exclusive), '' = server clock for date columns
 DECLARE @pcol sysname       = N'__PCOL__';   -- partition column, '' = single stream
-DECLARE @n    int           = __N__;         -- number of read batches
+DECLARE @n    int           = __N__;         -- rows per batch = rows per file (p_Rows_Per_File)
 
 DECLARE @err nvarchar(4000) = N'';
 DECLARE @oid int = (SELECT o.object_id FROM sys.objects o WHERE o.object_id = OBJECT_ID(@obj) AND o.type IN ('U', 'V'));
@@ -13,14 +15,6 @@ DECLARE @objsql nvarchar(600) = QUOTENAME(OBJECT_SCHEMA_NAME(@oid)) + N'.' + QUO
 
 IF @oid IS NULL
     SET @err = N'Source table ' + @obj + N' not found. Check the delta twin OBJECT_NAME and SourceConfig.';
-
--- Column names the Parquet sink rejects.
-DECLARE @bad nvarchar(max) = STUFF((
-    SELECT N', ' + c.name FROM sys.columns c
-    WHERE c.object_id = @oid AND c.name LIKE N'%[ ,;{}()=' + NCHAR(9) + NCHAR(10) + NCHAR(13) + N']%'
-    ORDER BY c.column_id FOR XML PATH(''), TYPE).value('.', 'nvarchar(max)'), 1, 2, N'');
-IF @err = N'' AND @bad IS NOT NULL
-    SET @err = N'Column names not supported by Parquet (space or ,;{}()= tab newline): ' + @bad;
 
 -- Window column.
 DECLARE @wtype sysname, @wsql nvarchar(300), @wkind varchar(4) = '';
@@ -83,20 +77,15 @@ IF @err = N'' AND @pcol <> N'' AND @ptype NOT IN ('tinyint', 'smallint', 'int', 
     SET @err = N'Partition column ' + @pcol + N' is ' + @ptype + N'; it must be an integer type.';
 IF @err = N'' AND @pcol <> N'' AND @pidx = 0
     SET @err = N'Partition column ' + @pcol + N' is not the leading column of an index; leave partition_column empty.';
-IF @err = N'' AND (@n < 1 OR @n > 64)
-    SET @err = N'p_Read_Batches must be between 1 and 64.';
+IF @err = N'' AND @n < 1000
+    SET @err = N'p_Rows_Per_File must be at least 1000.';
 
--- SELECT list with the type mapping (DESIGN.md 6.2).
+-- SELECT list: raw columns in column order, like the delta's SELECT *, so the JSON sink writes the same text as
+-- the delta feed. Only types ADF cannot read are converted.
 DECLARE @list nvarchar(max) = STUFF((
     SELECT N', ' + CASE
         WHEN c.system_type_id = 240 THEN x.q + N'.ToString()'                                   -- hierarchyid, geography, geometry
-        WHEN x.t IN ('datetime', 'datetime2', 'smalldatetime') THEN N'CONVERT(varchar(27), ' + x.q + N', 126)'
-        WHEN x.t = 'datetimeoffset' THEN N'CONVERT(varchar(34), ' + x.q + N', 126)'
-        WHEN x.t = 'date' THEN N'CONVERT(varchar(10), ' + x.q + N', 23)'
-        WHEN x.t = 'time' THEN N'CONVERT(varchar(16), ' + x.q + N', 121)'
-        WHEN x.t IN ('decimal', 'numeric') AND c.precision > 28 THEN N'CONVERT(varchar(50), ' + x.q + N')'
-        WHEN x.t = 'timestamp' THEN N'CONVERT(varchar(18), ' + x.q + N', 1)'
-        WHEN x.t IN ('xml', 'sql_variant') THEN N'CONVERT(nvarchar(max), ' + x.q + N')'
+        WHEN x.t = 'sql_variant' THEN N'CONVERT(nvarchar(max), ' + x.q + N')'
         ELSE x.q END + N' AS ' + x.q
     FROM sys.columns c CROSS APPLY (SELECT TYPE_NAME(c.system_type_id) AS t, QUOTENAME(c.name) AS q) x
     WHERE c.object_id = @oid ORDER BY c.column_id
@@ -104,25 +93,31 @@ DECLARE @list nvarchar(max) = STUFF((
 
 DECLARE @src nvarchar(max) = N'SELECT ' + @list + N' FROM ' + @objsql + N' WITH (NOLOCK) WHERE 1 = 1' + @wpred;
 
--- Batch ranges: half-open on the partition key, first open below, last open above, NULL keys in their own batch.
+-- Batch ranges: half-open on the partition key, first open below, last open above, NULL keys in their own batch
+-- (only when NULL keys exist: an empty JSON file must never be the first file loaded, which creates BRONZE).
+-- The batch count is checked on the ranges actually produced (#r), so batches + batch 0 never exceed the 5000-row
+-- Lookup cap, which would otherwise drop batches silently.
 DECLARE @pq nvarchar(600) = REPLACE(@psql, N'''', N'''''');   -- key name inside a literal of the generated query
 DECLARE @ranges nvarchar(max) = CASE WHEN @pcol = N''
     THEN N'SELECT 1 AS BATCH_NO, CAST(N'''' AS nvarchar(400)) AS BATCH_FILTER;'
     ELSE N'SET NOCOUNT ON;
-DECLARE @cnt bigint = (SELECT COUNT_BIG(*) FROM ' + @objsql + N' WITH (NOLOCK) WHERE ' + @psql + N' IS NOT NULL' + @wpred + N');
-DECLARE @step bigint = CASE WHEN @cnt = 0 THEN 1 ELSE CEILING(@cnt * 1.0 / ' + CAST(@n AS nvarchar(10)) + N') END;
+DECLARE @step bigint = ' + CAST(@n AS nvarchar(10)) + N';
 WITH t AS (SELECT ' + @psql + N' AS k, ROW_NUMBER() OVER (ORDER BY ' + @psql + N') AS rn FROM ' + @objsql
         + N' WITH (NOLOCK) WHERE ' + @psql + N' IS NOT NULL' + @wpred + N'),
 b AS (SELECT DISTINCT k AS lo FROM t WHERE (rn - 1) % @step = 0),
 r AS (SELECT lo, LEAD(lo) OVER (ORDER BY lo) AS hi, ROW_NUMBER() OVER (ORDER BY lo) AS n FROM b)
+SELECT lo, hi, n INTO #r FROM r;
+IF (SELECT COUNT(*) FROM #r) > 4999 THROW 50001, N''More than 4999 batches (one file each): raise p_Rows_Per_File.'', 1;
 SELECT n AS BATCH_NO, N'' AND ' + @pq + N' IS NOT NULL''
      + CASE WHEN n > 1 THEN N'' AND ' + @pq + N' >= '' + CAST(lo AS nvarchar(20)) ELSE N'''' END
      + CASE WHEN hi IS NOT NULL THEN N'' AND ' + @pq + N' < '' + CAST(hi AS nvarchar(20)) ELSE N'''' END AS BATCH_FILTER
-FROM r' + CASE WHEN @pnull = 1 THEN N'
-UNION ALL SELECT 0, N'' AND ' + @pq + N' IS NULL''' ELSE N'' END + N';'
+FROM #r' + CASE WHEN @pnull = 1 THEN N'
+UNION ALL SELECT 0, N'' AND ' + @pq + N' IS NULL'' WHERE EXISTS (SELECT 1 FROM ' + @objsql + N' WITH (NOLOCK) WHERE '
+        + @psql + N' IS NULL' + @wpred + N')' ELSE N'' END + N';'
     END;
 
--- Row estimate for the early file-count guard (whole table, from metadata; the window can only reduce it).
+-- Row estimate (whole table, from metadata). The JSON pipeline does not use it as a file-count guard: without a
+-- partition column it writes one file, and with one the #r check above applies.
 DECLARE @est bigint = (SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = @oid AND p.index_id IN (0, 1));
 
 SELECT @err AS ERROR_MESSAGE,

@@ -1,4 +1,4 @@
--- README steps 7-10. Monitoring for data priming. Read-only.
+-- README.md section 4 (steps 1 and 6). Monitoring for data priming. Read-only.
 -- The run's own record is the ADF run (Monitor): 'Get source columns' output has WINDOW_FILTER, 'Data in' returns
 -- batch_rows, 'End prime' returns the reconcile row.
 USE ROLE OPS_DEV_RO;   -- for a test prime, the test BRONZE table is owned by the ingestion role: use a role that can

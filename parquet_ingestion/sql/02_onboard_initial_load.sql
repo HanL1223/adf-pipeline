@@ -1,4 +1,4 @@
--- README steps 4 and 8. Read-only check of a table's EXTRACT_META rows. Changes nothing.
+-- README.md sections 4 (step 3) and 5. Read-only check of a table's EXTRACT_META rows. Changes nothing.
 -- The setup DML runs in the pipeline as the ADF role (it holds CONTROL_DEV_RW):
 --   test prime  -> 'Prepare row' creates the <table>_PRIME_TEST row automatically;
 --   live prime  -> 'Prepare row' fixes or creates the live INITIAL_LOAD row only with p_Prepare_Live_Row = true.
