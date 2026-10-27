@@ -36,6 +36,7 @@ DECLARE
     v_needs   BOOLEAN;
     v_old     VARCHAR;
     n_dup     NUMBER DEFAULT 0;
+    n_off     NUMBER DEFAULT 0;
     n_pq      NUMBER DEFAULT 0;
     res       RESULTSET;
 BEGIN
@@ -62,10 +63,10 @@ BEGIN
             msg := 'Test row for ' || v_table || ' already exists.'
                 || IFF(n_path > 0, ' SOURCE_PATH moved to ' || v_path || '.', '');
             -- Not moved and still off the convention: say why instead of letting Check pair fail with a loop.
-            SELECT COUNT(*) INTO :n_dup FROM EDP_DEV.CONTROL.EXTRACT_META
+            SELECT COUNT(*) INTO :n_off FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE'
               AND LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ '));
-            IF (n_path = 0 AND n_dup > 0) THEN
+            IF (n_path = 0 AND n_off > 0) THEN
                 v_status := 'ERROR';
                 msg := 'Test row for ' || v_table || ' could not be moved to SOURCE_PATH ' || v_path || ': it is ACTIVE '
                     || '(check ADF Monitor, then re-run with p_Force = true) or the path is used by another row '
