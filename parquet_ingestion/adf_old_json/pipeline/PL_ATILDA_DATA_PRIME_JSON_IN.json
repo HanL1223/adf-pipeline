@@ -257,9 +257,6 @@
             }
         ],
         "parameters": {
-            "p_Initial_Meta_Id": {
-                "type": "string"
-            },
             "p_Source_Name": {
                 "type": "string"
             },
@@ -277,10 +274,6 @@
             },
             "p_Batches": {
                 "type": "array"
-            },
-            "p_Rows_Per_File": {
-                "type": "int",
-                "defaultValue": 500000
             },
             "p_Staging_Container": {
                 "type": "string",

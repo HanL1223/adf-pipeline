@@ -1,3 +1,4 @@
+-- The initial row must stage JSON (STAGE_FILE_TYPE NULL) with OBJECT_NAME <prefix>_part_%.json.
 -- 'Check pair' Lookup (read-only). Finds the INITIAL_LOAD / delta pair of one STAGE_TABLE_NAME, validates it and
 -- derives everything later steps need. Tokens {{...}} are replaced by tools/build_pipelines.py.
 -- Test mode: when source_from names another (live) table, the delta twin is looked up under that name and used
@@ -7,7 +8,7 @@
 WITH i AS (
     SELECT * FROM EDP_DEV.CONTROL.EXTRACT_META
     WHERE UPPER(STAGE_TABLE_NAME) = UPPER('{{TABLE}}') AND SOURCE_TYPE = 'FILE'
-      AND UPPER(STAGE_FILE_TYPE) = 'PARQUET' AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD')),
+      AND STAGE_FILE_TYPE IS NULL AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD')),
 t AS (
     -- Test mode needs both: source_from set AND a target named *_PRIME_TEST. Anything in between is an error.
     SELECT COALESCE(NULLIF(UPPER(TRIM('{{SOURCE_FROM}}')), ''), UPPER('{{TABLE}}')) AS source_table,
@@ -35,7 +36,7 @@ x AS (
            t.src_set, t.ends_test, COLLATE(i.RUN_GROUP, '') AS i_group,
            i.EXTRACT_META_ID AS i_id, COLLATE(i.SOURCE_NAME, '') AS i_source, COLLATE(i.SOURCE_PATH, '') AS i_path,
            COLLATE(i.OBJECT_NAME, '') AS i_object,
-           COLLATE(i.SQL_STATEMENT, '') AS i_sqlstmt, COALESCE(i.PARALLEL_STAGE_LOAD_FLAG, FALSE) AS i_parallel,
+           COLLATE(i.SQL_STATEMENT, '') AS i_sqlstmt,
            COALESCE(i.ACTIVE_FLAG, FALSE) AS i_active, COLLATE(i.TARGET_SCHEMA, '') AS tschema, COLLATE(i.STAGE_TABLE_NAME, '') AS stage,
            d.EXTRACT_META_ID AS d_id, COLLATE(d.SOURCE_NAME, '') AS d_source, COLLATE(d.OBJECT_NAME, '') AS d_object,
            COALESCE(d.ACTIVE_FLAG, FALSE) AS d_active, NULLIF(TRIM(COLLATE(d.SQL_SNIPPET, '')), '') AS d_snippet
@@ -47,8 +48,9 @@ SELECT
     CASE
         WHEN TRY_TO_BOOLEAN('{{ENABLE_DELTA}}') IS NULL THEN 'enable_delta / p_Enable_Delta must be true or false, got {{ENABLE_DELTA}}.'
         WHEN {{ROWS_PER_FILE}} < 1000 THEN 'p_Rows_Per_File must be at least 1000, got {{ROWS_PER_FILE}}.'
-        WHEN ni <> 1 THEN 'Expected 1 INITIAL_LOAD Parquet row (SOURCE_TYPE FILE) for {{TABLE}}, found ' || ni
-                          || '. For a live table re-run with p_Prepare_Live_Row = true to create it.'
+        WHEN ni <> 1 THEN 'Expected 1 INITIAL_LOAD JSON row (SOURCE_TYPE FILE, STAGE_FILE_TYPE NULL) for {{TABLE}}, found ' || ni
+                          || '. Test target: if an old (Parquet) test row exists, run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST '
+                          || 'with p_Delete_Test_Row = true first. Live table: re-run with p_Prepare_Live_Row = true.'
         WHEN src_set AND NOT ends_test THEN 'source_from is set, so {{TABLE}} must be a test target named *_PRIME_TEST '
                           || '(created automatically). Remove source_from to prime the live table.'
         WHEN ends_test AND NOT src_set THEN '{{TABLE}} is a test target; add "source_from": "<live table>".'
@@ -61,16 +63,15 @@ SELECT
                           || '''; it must be NULL (1=1 deletes BRONZE before every file). Re-run with p_Prepare_Live_Row = true.'
         WHEN UPPER(COALESCE(i_group, '')) <> 'DATA_PRIME' THEN 'Initial row ' || i_id || ' RUN_GROUP is '
                           || COALESCE(i_group, 'NULL') || '; it must be DATA_PRIME so no trigger runs it. Re-run with p_Prepare_Live_Row = true.'
-        WHEN NOT i_parallel THEN 'Initial row ' || i_id || ' needs PARALLEL_STAGE_LOAD_FLAG = TRUE. Re-run with p_Prepare_Live_Row = true.'
         WHEN NULLIF(TRIM(i_path), '') IS NULL THEN 'Initial row ' || i_id || ' has no SOURCE_PATH.'
-        WHEN i_object IS NULL OR NOT ENDSWITH(LOWER(i_object), '_part_%.parquet') OR LENGTH(i_object) <= 15
-             OR CONTAINS(LEFT(i_object, LENGTH(i_object) - 15), '%')
-             THEN 'Initial row ' || i_id || ' OBJECT_NAME must be <prefix>_part_%.parquet, got ' || COALESCE(i_object, 'NULL') || '.'
+        WHEN i_object IS NULL OR NOT ENDSWITH(LOWER(i_object), '_part_%.json') OR LENGTH(i_object) <= 12
+             OR CONTAINS(LEFT(i_object, LENGTH(i_object) - 12), '%')
+             THEN 'Initial row ' || i_id || ' OBJECT_NAME must be <prefix>_part_%.json, got ' || COALESCE(i_object, 'NULL') || '.'
         WHEN NULLIF(TRIM(d_object), '') IS NULL THEN 'Delta twin ' || d_id || ' has no OBJECT_NAME (schema.table).'
         WHEN path_users > 0 THEN 'SOURCE_PATH ' || i_path || ' is also used by ' || path_users
                           || ' other EXTRACT_META row(s); the prime clears that folder, so it must be unique.'
         WHEN NOT test_mode AND d_open > 0 THEN 'Delta twin ' || d_id || ' has ' || d_open || ' open (PLANNED) plan(s). Let the delta run finish, '
-                          || 'or abandon them (Altida_Skill.md section 8), then re-run.'
+                          || 'then re-run.'
         WHEN CONTAINS(COALESCE(d_snippet, ''), '$$') THEN 'Delta twin ' || d_id || ' SQL_SNIPPET contains $$; not supported.'
         WHEN i_active AND NOT {{FORCE}} THEN 'Initial row ' || i_id || ' is ACTIVE: another prime is running, or one was '
                           || 'cancelled. Check ADF Monitor, then re-run with p_Force = true.'
@@ -84,7 +85,7 @@ SELECT
     d_source AS SOURCE_NAME,
     d_object AS SOURCE_OBJECT,
     i_path AS SOURCE_PATH,
-    LEFT(i_object, LENGTH(i_object) - 15) AS FILE_PREFIX,
+    LEFT(i_object, LENGTH(i_object) - 12) AS FILE_PREFIX,
     i_source AS INITIAL_SOURCE_NAME,
     UPPER(tschema) AS TARGET_SCHEMA,
     UPPER(stage) AS STAGE_TABLE,

@@ -1,4 +1,4 @@
-"""Static checks (run: python3 tools/check.py adf/pipeline) of ADF pipeline JSON: expression syntax (balanced, quoted), references, nesting, dependencies."""
+"""Static checks (run: python3 tools/check.py adf_old_json/pipeline) of ADF pipeline JSON: expression syntax (balanced, quoted), references, nesting, dependencies."""
 import glob
 import json
 import re

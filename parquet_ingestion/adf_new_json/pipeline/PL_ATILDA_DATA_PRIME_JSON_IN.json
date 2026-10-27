@@ -1,7 +1,7 @@
 {
-    "name": "PL_ATILDA_DATA_PRIME_IN",
+    "name": "PL_ATILDA_DATA_PRIME_JSON_IN",
     "properties": {
-        "description": "Data prime, part 1 (data in): extract one SQL Server table to Parquet part files in <StagingContainer>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME.",
+        "description": "Data prime, part 1 (data in): extract one SQL Server table to JSON part files in <StagingContainer>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME_JSON before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
         "activities": [
             {
                 "name": "Check landing folder",
@@ -92,7 +92,7 @@
                                     "type": "AzureBlobStorageReadSettings",
                                     "recursive": false,
                                     "wildcardFileName": {
-                                        "value": "@concat(pipeline().parameters.p_File_Prefix, '_part_*.parquet')",
+                                        "value": "@concat(pipeline().parameters.p_File_Prefix, '_part_*.json')",
                                         "type": "Expression"
                                     }
                                 }
@@ -123,7 +123,7 @@
                     "batchCount": 4,
                     "activities": [
                         {
-                            "name": "Extract to parquet",
+                            "name": "Extract to json",
                             "type": "Copy",
                             "dependsOn": [],
                             "policy": {
@@ -134,7 +134,7 @@
                                 "secureInput": false
                             },
                             "userProperties": [],
-                            "description": "One key-range batch to Parquet part files <prefix>_part_<RunId>_b<k>_<n>.parquet. No partitionOption, so fileNamePrefix applies. No retry: a retry would duplicate part files.",
+                            "description": "One key-range batch (p_Rows_Per_File rows) to one JSON file <prefix>_part_<RunId>_b<k>_1.json (gzip content, as the delta writes). No retry needed: a re-run overwrites the same name, but the prime is re-run as a whole.",
                             "typeProperties": {
                                 "source": {
                                     "type": "SqlServerSource",
@@ -146,30 +146,15 @@
                                     "partitionOption": "None"
                                 },
                                 "sink": {
-                                    "type": "ParquetSink",
+                                    "type": "JsonSink",
                                     "storeSettings": {
                                         "type": "AzureBlobStorageWriteSettings"
                                     },
                                     "formatSettings": {
-                                        "type": "ParquetWriteSettings",
-                                        "maxRowsPerFile": {
-                                            "value": "@pipeline().parameters.p_Rows_Per_File",
-                                            "type": "Expression"
-                                        },
-                                        "fileNamePrefix": {
-                                            "value": "@{pipeline().parameters.p_File_Prefix}_part_@{pipeline().parameters.p_Run_Id}_b@{item().BATCH_NO}",
-                                            "type": "Expression"
-                                        }
+                                        "type": "JsonWriteSettings"
                                     }
                                 },
-                                "enableStaging": true,
-                                "stagingSettings": {
-                                    "linkedServiceName": {
-                                        "referenceName": "cwraseedpst",
-                                        "type": "LinkedServiceReference"
-                                    },
-                                    "path": "snowflake-data/_adf_staging"
-                                }
+                                "enableStaging": false
                             },
                             "inputs": [
                                 {
@@ -197,7 +182,7 @@
                             ],
                             "outputs": [
                                 {
-                                    "referenceName": "DS_Storage_Landing_Parquet",
+                                    "referenceName": "DS_Storage_Stage_JSON",
                                     "type": "DatasetReference",
                                     "parameters": {
                                         "Folder": {
@@ -205,7 +190,7 @@
                                             "type": "Expression"
                                         },
                                         "File": {
-                                            "value": "@string('')",
+                                            "value": "@{pipeline().parameters.p_File_Prefix}_part_@{pipeline().parameters.p_Run_Id}_b@{item().BATCH_NO}_1.json",
                                             "type": "Expression"
                                         },
                                         "Container": {
@@ -221,7 +206,7 @@
                             "type": "AppendVariable",
                             "dependsOn": [
                                 {
-                                    "activity": "Extract to parquet",
+                                    "activity": "Extract to json",
                                     "dependencyConditions": [
                                         "Succeeded"
                                     ]
@@ -231,7 +216,7 @@
                             "typeProperties": {
                                 "variableName": "vBatch_Rows",
                                 "value": {
-                                    "value": "@json(concat('{\"b\":\"', string(item().BATCH_NO), '\",\"rows\":', string(activity('Extract to parquet').output.rowsCopied), '}'))",
+                                    "value": "@json(concat('{\"b\":\"', string(item().BATCH_NO), '\",\"rows\":', string(activity('Extract to json').output.rowsCopied), '}'))",
                                     "type": "Expression"
                                 }
                             }
@@ -272,9 +257,6 @@
             }
         ],
         "parameters": {
-            "p_Initial_Meta_Id": {
-                "type": "string"
-            },
             "p_Source_Name": {
                 "type": "string"
             },
@@ -292,10 +274,6 @@
             },
             "p_Batches": {
                 "type": "array"
-            },
-            "p_Rows_Per_File": {
-                "type": "int",
-                "defaultValue": 500000
             }
         },
         "variables": {
@@ -305,7 +283,7 @@
             }
         },
         "folder": {
-            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime/Child"
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime JSON/Child"
         },
         "annotations": []
     }

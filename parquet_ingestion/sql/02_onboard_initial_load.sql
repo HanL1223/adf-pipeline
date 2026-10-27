@@ -1,4 +1,4 @@
--- README steps 4 and 8. Read-only check of a table's EXTRACT_META rows. Changes nothing.
+-- README.md section 5 A1. Read-only check of a table's EXTRACT_META rows. Changes nothing.
 -- The setup DML runs in the pipeline as the ADF role (it holds CONTROL_DEV_RW):
 --   test prime  -> 'Prepare row' creates the <table>_PRIME_TEST row automatically;
 --   live prime  -> 'Prepare row' fixes or creates the live INITIAL_LOAD row only with p_Prepare_Live_Row = true.
@@ -25,10 +25,16 @@ ORDER BY STAGE_TABLE_NAME, SOURCE_TYPE, EXTRACT_META_ID;
 -- ===================================================================================================== B. What 'Prepare row' would do (live)
 -- LIVE_ROW_READY         : nothing to change.
 -- LIVE_ROW_NEEDS_PREPARE : the live prime stops unless p_Prepare_Live_Row = true; then exactly this row changes
---                          (SQL_STATEMENT -> NULL, PARALLEL_STAGE_LOAD_FLAG -> TRUE, RUN_GROUP -> DATA_PRIME).
-SELECT EXTRACT_META_ID, SQL_STATEMENT, PARALLEL_STAGE_LOAD_FLAG, RUN_GROUP, ACTIVE_FLAG,
-       IFF(SQL_STATEMENT IS NULL AND COALESCE(PARALLEL_STAGE_LOAD_FLAG, FALSE)
-           AND UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) = 'DATA_PRIME', 'LIVE_ROW_READY', 'LIVE_ROW_NEEDS_PREPARE') AS PREPARE
+--                          (SQL_STATEMENT -> NULL, RUN_GROUP -> DATA_PRIME).
+-- JSON build (PL_ATILDA_DATA_PRIME_JSON) only:
+-- LIVE_ROW_NEEDS_CONVERT : a Parquet row. With p_Prepare_Live_Row = true the JSON prime converts it in place
+--                          (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from
+--                          the delta twin, plus the two fixes above). Save this output first: it is the backup.
+SELECT EXTRACT_META_ID, OBJECT_NAME, STAGE_FILE_TYPE, STAGE_FILE_SPEC, SCHEMA_DRIFT_CODE, SQL_STATEMENT,
+       PARALLEL_STAGE_LOAD_FLAG, RUN_GROUP, ACTIVE_FLAG, SOURCE_PATH,
+       CASE WHEN UPPER(STAGE_FILE_TYPE) = 'PARQUET' THEN 'LIVE_ROW_NEEDS_CONVERT (JSON build)'
+            WHEN SQL_STATEMENT IS NULL AND UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) = 'DATA_PRIME' THEN 'LIVE_ROW_READY'
+            ELSE 'LIVE_ROW_NEEDS_PREPARE' END AS PREPARE
 FROM CONTROL.EXTRACT_META
 WHERE UPPER(STAGE_TABLE_NAME) = UPPER($stage_table) AND SOURCE_TYPE = 'FILE'
   AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');

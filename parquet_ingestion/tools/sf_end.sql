@@ -105,6 +105,8 @@ BEGIN
                 restored := TRUE;
                 msg := 'Primed ' || bronze_rows || ' rows. Delta twin {{DELTA}} is ON (' || wm_msg || ').';
             ELSE
+                -- Live with p_Enable_Delta true but the delta cannot safely resume: not OK, so the run fails visibly.
+                v_status := IFF({{ENABLE_DELTA}}, 'ERROR', 'OK');
                 msg := 'Primed ' || bronze_rows || ' rows. Delta twin {{DELTA}} left OFF: '
                     || CASE WHEN NOT {{ENABLE_DELTA}} THEN 'p_Enable_Delta is false.'
                             WHEN bronze_rows = 0 THEN 'BRONZE is empty, the delta would pull the whole table.'

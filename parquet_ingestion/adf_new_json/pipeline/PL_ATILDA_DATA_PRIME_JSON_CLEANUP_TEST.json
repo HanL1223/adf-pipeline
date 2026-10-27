@@ -1,5 +1,5 @@
 {
-    "name": "PL_ATILDA_DATA_PRIME_CLEANUP_TEST",
+    "name": "PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST",
     "properties": {
         "description": "Removes test prime targets (*_PRIME_TEST): drops the test BRONZE table, deletes its landing files and, with p_Delete_Test_Row = true, the test EXTRACT_META row and its auto LOAD_META row. Never touches a live table.",
         "activities": [
@@ -210,7 +210,7 @@
                                             "storeSettings": {
                                                 "type": "AzureBlobStorageReadSettings",
                                                 "recursive": false,
-                                                "wildcardFileName": "*.parquet"
+                                                "wildcardFileName": "*.json"
                                             }
                                         }
                                     }
@@ -234,7 +234,7 @@
         },
         "variables": {},
         "folder": {
-            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime"
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime JSON"
         },
         "annotations": []
     }

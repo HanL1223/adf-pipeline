@@ -1,7 +1,7 @@
 {
-    "name": "PL_ATILDA_DATA_PRIME_OUT",
+    "name": "PL_ATILDA_DATA_PRIME_JSON_OUT",
     "properties": {
-        "description": "Data prime, part 2 (data out): plan this run's Parquet files in ATILDA (one plan per file) and load them into BRONZE. Called by PL_ATILDA_DATA_PRIME.",
+        "description": "Data prime, part 2 (data out): plan this run's JSON files in ATILDA (one plan per file) and load them into BRONZE. Called by PL_ATILDA_DATA_PRIME_JSON.",
         "activities": [
             {
                 "name": "Get File Metadata",
@@ -26,7 +26,7 @@
                                 "type": "Expression"
                             },
                             "Container": {
-                                "value": "@pipeline().parameters.p_Staging_Container",
+                                "value": "@pipeline().globalParameters.StagingContainer",
                                 "type": "Expression"
                             }
                         }
@@ -62,7 +62,7 @@
                         "type": "Expression"
                     },
                     "condition": {
-                        "value": "@and(equals(item().type, 'File'), and(startswith(item().name, concat(pipeline().parameters.p_File_Prefix, '_part_', pipeline().parameters.p_Run_Id, '_')), endswith(toLower(item().name), '.parquet')))",
+                        "value": "@and(equals(item().type, 'File'), and(startswith(item().name, concat(pipeline().parameters.p_File_Prefix, '_part_', pipeline().parameters.p_Run_Id, '_')), endswith(toLower(item().name), '.json')))",
                         "type": "Expression"
                     }
                 }
@@ -175,7 +175,7 @@
                     "source": {
                         "type": "SnowflakeV2Source",
                         "query": {
-                            "value": "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW WHERE EXTRACT_META_ID = @{pipeline().parameters.p_Initial_Meta_Id} AND CONTAINS(FILE_NAME, '_part_@{pipeline().parameters.p_Run_Id}_') ORDER BY FILE_NAME",
+                            "value": "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, OBJECT_NAME, SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW WHERE EXTRACT_META_ID = @{pipeline().parameters.p_Initial_Meta_Id} AND CONTAINS(FILE_NAME, '_part_@{pipeline().parameters.p_Run_Id}_') ORDER BY FILE_NAME",
                             "type": "Expression"
                         },
                         "exportSettings": {
@@ -224,7 +224,7 @@
                 }
             },
             {
-                "name": "Load first file",
+                "name": "Load files",
                 "type": "ForEach",
                 "dependsOn": [
                     {
@@ -235,10 +235,9 @@
                     }
                 ],
                 "userProperties": [],
-                "description": "Loads one file alone first, so DLA creates the BRONZE table once.",
                 "typeProperties": {
                     "items": {
-                        "value": "@take(activity('Get run plan').output.value, 1)",
+                        "value": "@activity('Get run plan').output.value",
                         "type": "Expression"
                     },
                     "isSequential": true,
@@ -250,7 +249,7 @@
                             "userProperties": [],
                             "typeProperties": {
                                 "pipeline": {
-                                    "referenceName": "PL_ATILDA_DATA_PRIME_LOAD_FILE",
+                                    "referenceName": "PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE",
                                     "type": "PipelineReference"
                                 },
                                 "waitOnCompletion": true,
@@ -283,79 +282,8 @@
                                         "value": "@pipeline().parameters.p_Batch_ID",
                                         "type": "Expression"
                                     },
-                                    "p_Staging_Container": {
-                                        "value": "@pipeline().parameters.p_Staging_Container",
-                                        "type": "Expression"
-                                    }
-                                }
-                            }
-                        }
-                    ]
-                }
-            },
-            {
-                "name": "Load other files",
-                "type": "ForEach",
-                "dependsOn": [
-                    {
-                        "activity": "Load first file",
-                        "dependencyConditions": [
-                            "Succeeded"
-                        ]
-                    }
-                ],
-                "userProperties": [],
-                "description": "Files hold disjoint rows (PARALLEL_STAGE_LOAD_FLAG = TRUE), so they load in parallel.",
-                "typeProperties": {
-                    "items": {
-                        "value": "@skip(activity('Get run plan').output.value, 1)",
-                        "type": "Expression"
-                    },
-                    "isSequential": false,
-                    "batchCount": 4,
-                    "activities": [
-                        {
-                            "name": "Load other file",
-                            "type": "ExecutePipeline",
-                            "dependsOn": [],
-                            "userProperties": [],
-                            "typeProperties": {
-                                "pipeline": {
-                                    "referenceName": "PL_ATILDA_DATA_PRIME_LOAD_FILE",
-                                    "type": "PipelineReference"
-                                },
-                                "waitOnCompletion": true,
-                                "parameters": {
-                                    "p_Extract_Run_Plan_Id": {
-                                        "value": "@string(item().EXTRACT_RUN_PLAN_ID)",
-                                        "type": "Expression"
-                                    },
-                                    "p_Extract_Meta_Id": {
-                                        "value": "@string(item().EXTRACT_META_ID)",
-                                        "type": "Expression"
-                                    },
-                                    "p_File_Name": {
-                                        "value": "@item().FILE_NAME",
-                                        "type": "Expression"
-                                    },
-                                    "p_Source_Path": {
-                                        "value": "@item().SOURCE_PATH",
-                                        "type": "Expression"
-                                    },
-                                    "p_Lvl1_Folder_Name": {
-                                        "value": "@item().LVL1_FOLDER_NAME",
-                                        "type": "Expression"
-                                    },
-                                    "p_Source_Extract_Status": {
-                                        "value": "@coalesce(item().SOURCE_EXTRACT_STATUS, '')",
-                                        "type": "Expression"
-                                    },
-                                    "p_Batch_ID": {
-                                        "value": "@pipeline().parameters.p_Batch_ID",
-                                        "type": "Expression"
-                                    },
-                                    "p_Staging_Container": {
-                                        "value": "@pipeline().parameters.p_Staging_Container",
+                                    "p_Object_Name": {
+                                        "value": "@item().OBJECT_NAME",
                                         "type": "Expression"
                                     }
                                 }
@@ -384,10 +312,6 @@
             "p_Batch_ID": {
                 "type": "string",
                 "defaultValue": ""
-            },
-            "p_Staging_Container": {
-                "type": "string",
-                "defaultValue": "snowflake-data"
             }
         },
         "variables": {
@@ -397,7 +321,7 @@
             }
         },
         "folder": {
-            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime/Child"
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime JSON/Child"
         },
         "annotations": []
     }
