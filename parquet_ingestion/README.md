@@ -4,7 +4,7 @@
 
 **How to use this file.** Read sections 1–3 once. For each table you want to prime, copy the worksheet in section 4, fill it in, and follow section 5 step by step. Sections 6–7 are reference. Section 8 is a fully worked example (DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY).
 
-**Framework rules.** These follow `src/cw_batch_priming/Altida_Skill.md` (the "ATILDA guide"). Where this solution deliberately differs, section 9 says so and why.
+**Framework rules.** These follow `src/cw_batch_priming/Altida_Skill.md.docx` (the "ATILDA guide"). Where this solution deliberately differs, section 9 says so and why.
 
 Status: 2026-10-27. This file replaces README.md.docx, handover.md.docx and adf_old_json/README.md.docx. DESIGN.md.docx still holds the design history.
 
@@ -35,7 +35,7 @@ For table `<T>`, with its existing delta row in ATILDA:
 2. **Test prime** into `<T>_PRIME_TEST`, which never touches the real table:
    `p_Objects = [{"table":"<T>_PRIME_TEST","source_from":"<T>","window_column":"<wm>","window_start":"<1 month ago>","window_end":"<today>","partition_column":"<key>"}]`
    Check the result, then run the cleanup pipeline.
-3. **Dry run of the live setup.** Use the live parameters with `p_Prepare_Live_Row = false`. Nothing changes, and it shows what Prepare would change.
+3. **Dry run of the live setup.** Use the live `p_Objects` plus `"window_start":"2999-01-02","window_end":"2999-01-01"` (an impossible window), with `p_Prepare_Live_Row = false`. It always stops before Begin, so nothing changes, and it shows what Prepare would change.
 4. **Live prime:**
    `p_Objects = [{"table":"<T>","window_column":"<wm>","partition_column":"<key>"}]`, `p_Prepare_Live_Row = true`, window start and end empty.
 5. **Verify** with `sql/03_monitor.sql`, then confirm the next daily delta run completes.
@@ -79,7 +79,7 @@ on failure after Begin: Abort (unlock, delta row stays OFF) → run fails
 - The initial rows always use **RUN_GROUP = 'DATA_PRIME'**:
   - Prepare sets it when it creates or converts a row;
   - Check pair refuses to run if the initial row has any other group.
-- **SCMergeCO** is the group of the live daily delta. In this repo, trigger SCMergeCOSTOCKDB-DailyLoad runs DI_RDBMS_Shared_SQL_Server with `p_Run_Group = SCMergeCO` daily at 06:00 AEST. Other triggers use SCMergeCO or GRP:INCREMENTAL.
+- **SCMergeCO** is the group of the live daily delta. In this repo, trigger SCMergeCOSTOCKDB-DailyLoad runs DI_RDBMS_Shared_SQL_Server with `p_Run_Group = SCMergeCO` daily at 06:00 Sydney time. Other triggers use SCMergeCO or GRP:INCREMENTAL.
 - **No trigger or master pipeline runs DATA_PRIME.** So nothing scheduled can pick up an initial row while a prime holds it ACTIVE, and the prime never runs inside the delta's group.
 - The prime finds its rows **by table name and id, never by run group**.
 - **The delta row keeps SCMergeCO.** That is how the daily delta continues after the prime. Do not move it.
@@ -91,7 +91,7 @@ SELECT EXTRACT_META_ID, SOURCE_NAME, SOURCE_TYPE, STAGE_TABLE_NAME, ACTIVE_FLAG
 FROM EDP_DEV.CONTROL.EXTRACT_META WHERE UPPER(RUN_GROUP) = 'DATA_PRIME' ORDER BY 1;
 ```
 
-In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each trigger's parameters).
+In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each trigger's parameters). The house pipelines match run groups with CONTAINS, so also check that no trigger passes a fragment of it (DATA, PRIME) or a value ending in ALL.
 
 ---
 
@@ -102,7 +102,7 @@ In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each tr
 | Factory | Pipelines from | Container | Status |
 |---|---|---|---|
 | **cwr-ase-edp-dev-adf** (old) | `adf_old_json/pipeline/` | parameter `p_Staging_Container`, default `snowflake-data` (account cwraseedpdevst) | **Works.** Test run 4 passed |
-| **cwr-ae-dev-data-adf** (new) | `adf_new_json/pipeline/` | global `StagingContainer` (account cwraedevdata, container staging) | **Blocked** until checks G1–G3 below pass |
+| **cwr-ae-dev-data-adf** (new) | `adf_new_json/pipeline/` | global `StagingContainer` (account cwraedevdata, container staging) | **Blocked** until checks G1–G5 below pass |
 
 New factory gate:
 
@@ -167,7 +167,7 @@ Fill this in during step A of section 5. Every later step uses these values.
 | total_rows / null_wm / min_wm / max_wm | step A4 count | |
 | p_Rows_Per_File | 1,000,000 by default. For big tables, raise it (up to about 3,000,000) to keep files at ≤ 100 | |
 | enable_delta | `true` if the delta row is ACTIVE today; `false` if it is inactive on purpose | |
-| Delta schedule to avoid | the trigger for the delta's SOURCE_NAME and RUN_GROUP (e.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 AEST) | |
+| Delta schedule to avoid | the trigger for the delta's SOURCE_NAME and RUN_GROUP (e.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time) | |
 
 ---
 
@@ -280,18 +280,21 @@ SELECT LOAD_META_ID, JOB_GROUP, JOB_ACTION, TARGET_PRIMARY_KEY, JOB_GROUP_SEQ
 FROM EDP_DEV.CONTROL.LOAD_META WHERE TARGET_TABLE_NAME = '<T>' ORDER BY 1;
 ```
 
-**C3. Live dry run (changes nothing).** Debug with the D1 parameters, but `p_Prepare_Live_Row = false`.
+**C3. Live dry run (changes nothing).** Debug with the D1 parameters, with two changes:
 
-- **Expected result** depends on the initial row's state (A1):
+- p_Objects = `[{"table":"<T>","window_column":"<wm>","partition_column":"<key>","window_start":"2999-01-02","window_end":"2999-01-01"}]`. The impossible window (start after end) makes the run stop at *Check source columns* at the latest. It **never reaches Begin**, whatever state the row is in.
+- `p_Prepare_Live_Row = false`.
+
+**Expected result** depends on the initial row's state (A1):
 
   | Initial row state | Result |
   |---|---|
   | Parquet row | Fails at *Check prepare* with ACTION `LIVE_ROW_NEEDS_CONVERT` |
   | JSON row that needs fixing | Fails with `LIVE_ROW_NEEDS_PREPARE` |
   | No initial row | Fails with `LIVE_ROW_MISSING` |
-  | Already `LIVE_ROW_READY` | The dry run would continue into Begin. **Do not run C3 in that case.** Go to D |
+  | Already `LIVE_ROW_READY` | Prepare and Check pair pass, then it fails at *Check source columns* (PRIME_SOURCE_INVALID, "Window start must be before window end"). BRONZE and the delta row are untouched |
 
-- MESSAGE lists exactly what Prepare would change.
+For the first three states, Prepare row's MESSAGE lists exactly what Prepare would change. **Remove the two window keys before D1.**
 
 ### D. Live prime
 
@@ -301,7 +304,7 @@ FROM EDP_DEV.CONTROL.LOAD_META WHERE TARGET_TABLE_NAME = '<T>' ORDER BY 1;
 |---|---|---|
 | p_Objects | `[{"table":"<T>","window_column":"<wm>","partition_column":"<key>"}]` (add `"enable_delta":"false"` if the worksheet says so) | No `source_from`, so this is the live table |
 | p_Window_Start | `""`, and **no** `window_start` in p_Objects | **Full history.** Begin empties the table; a start date would permanently drop every older row. Clear any value left over from a test |
-| p_Window_End | `""` | Defaults to the source server's clock at extract start, which is the delta's handover point |
+| p_Window_End | `""` | For a date or datetime watermark (recipe A2), this defaults to the source server's clock at extract start: the delta's handover point. **For an integer watermark there is no automatic end:** set `"window_end"` in p_Objects to the current `MAX(<wm>) + 1` |
 | p_Rows_Per_File | from the worksheet | |
 | p_Enable_Delta | `true` | The delta row goes back ON after a pass |
 | p_Prepare_Live_Row | `true` | Lets Prepare create, convert or fix the initial row (once) |
@@ -311,23 +314,23 @@ FROM EDP_DEV.CONTROL.LOAD_META WHERE TARGET_TABLE_NAME = '<T>' ORDER BY 1;
 
 **D2. Expect.** The "Must show" column below is the full list of outputs to check.
 
-**D3. Save the outputs.** Copy **Prepare row → OLD_VALUES** and **Get source columns → WINDOW_FILTER** (the handover time) somewhere safe.
-
 | Activity | Must show |
 |---|---|
 | Prepare row | STATUS OK. ACTION `LIVE_ROW_CONVERTED`, `CREATED_LIVE_ROW`, `LIVE_ROW_PREPARED` or `LIVE_ROW_READY`. OLD_VALUES = the row before the change |
 | Check pair | ERROR_MESSAGE empty, TEST_MODE false, INITIAL_META_ID and DELTA_META_ID as in the worksheet |
-| Get source columns | ERROR_MESSAGE empty. WINDOW_FILTER only `AND [<wm>] < CONVERT(<type>, '<server clock>', 126)` |
+| Get source columns | ERROR_MESSAGE empty. WINDOW_FILTER has only the end bound, `AND [<wm>] < CONVERT(<type>, '<server clock>', 126)`, or `< <window_end>` for an integer watermark |
 | Get batch ranges | One row per batch (≈ total_rows / p_Rows_Per_File), plus batch 0 if the key has NULLs |
 | Begin prime | STATUS OK, "…delta twin <id> is OFF". **From here the live table is empty until the load finishes** |
 | Data in (child run) | One `<prefix>_part_<RunId>_b<k>_1.json` per batch in SOURCE_PATH. Output `batch_rows` |
 | Data out (child run) | Plans = files, then "Load files" runs them one at a time |
-| End prime | STATUS OK; ROWS_COPIED = BRONZE_ROWS; OTHER_ROWS 0; OPEN_PLANS 0; DUP_KEYS 0; BATCH_MISMATCH empty; **DELTA_RESTORED true** |
+| End prime | STATUS OK; ROWS_COPIED = BRONZE_ROWS; OTHER_ROWS 0; OPEN_PLANS 0; DUP_KEYS 0; BATCH_MISMATCH empty; **DELTA_RESTORED true** (false, with STATUS OK, when enable_delta is false) |
+
+**D3. Save the outputs.** Copy **Prepare row → OLD_VALUES** and **Get source columns → WINDOW_FILTER** (the handover time) somewhere safe.
 
 ### E. After the live prime
 
-1. **sql/03_monitor.sql** (stage_table = `<T>`, run_id = RunId):
-   - A: initial row ACTIVE FALSE, delta row ACTIVE TRUE.
+1. **sql/03_monitor.sql** (set stage_table = `<T>`, run_id = RunId, wm_col = `<WM>` in upper case):
+   - A: initial row ACTIVE FALSE, delta row ACTIVE TRUE (unless enable_delta was false).
    - B: all plans COMPLETED, and rows per batch match.
    - The MAX watermark is just below the WINDOW_FILTER end time.
 2. **Row count** ≈ total_rows from A4. Rows written after the end time arrive with the next delta.
@@ -347,7 +350,7 @@ Open the failed activity's error icon. For Data in or Data out, open the child p
 |---|---|---|
 | Fails before Begin prime | Nothing changed (except Prepare's row setup, if `p_Prepare_Live_Row` was true) | Fix the cause and re-run |
 | Fails after Begin, or End STATUS ERROR | Lock released. **Delta row OFF** (live). BRONZE empty or partial | Fix the cause and re-run the **whole** prime. Restore the clone if the data is needed meanwhile |
-| End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners; do not re-enable by hand |
+| End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners. Re-enabling the delta without a re-prime is the one manual exception: only a CONTROL_DEV_RW holder, with sign-off (sql/03 C) |
 | One file fails to load | The remaining files still load, then Abort runs | Read that file's _JSON_LOAD_FILE run, fix the cause and re-run |
 | The Begin prime activity itself fails (timeout or connection) | Begin may have committed (initial row ACTIVE, delta row OFF). Abort does not run | Check sql/03 A. If the initial row is ACTIVE, re-run with `p_Force = true` |
 | Run cancelled | Initial row ACTIVE (lock), delta row OFF (live) | Check in Monitor that nothing is running, then re-run with `p_Force = true` |
@@ -428,6 +431,8 @@ List them all in `p_Objects`. Each needs its own worksheet and its own passed te
 | PRIME_STAGE_COPY_FAILED | A file's copy to the ATILDA path |
 | PRIME_RECONCILE_FAILED | Check end |
 | PRIME_FAILED | The summary after Abort |
+| PRIME_NO_TABLES | Cleanup pipeline: empty p_Tables |
+| PRIME_CLEANUP_FAILED | Cleanup pipeline: Check cleanup |
 
 ---
 
@@ -438,7 +443,7 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 | Object | Test prime | Live prime |
 |---|---|---|
 | Delta row (`SOURCE_TYPE TABLE`) | Never touched | ACTIVE_FLAG FALSE from Begin; TRUE after a pass (p_Enable_Delta). Nothing else changes; its RUN_GROUP stays (e.g. SCMergeCO) |
-| Initial row (`FILE`, `…_INITIAL_LOAD`) | A separate test row `<T>_PRIME_TEST`, created once | Created, converted from Parquet or fixed once (p_Prepare_Live_Row), to: OBJECT_NAME `<t>_part_%.json`, STAGE_FILE_TYPE/SPEC NULL, SCHEMA_DRIFT_CODE = the delta's (2), SQL_STATEMENT NULL, **RUN_GROUP DATA_PRIME**. ACTIVE TRUE only while running. Id, SOURCE_NAME, SOURCE_PATH, LVL2, PRIMARY_KEYS are kept |
+| Initial row (`FILE`, `…_INITIAL_LOAD`) | A separate test row `<T>_PRIME_TEST`, created once | Once, with p_Prepare_Live_Row. **Created or converted from Parquet** to: OBJECT_NAME `<t>_part_%.json`, STAGE_FILE_TYPE/SPEC NULL, SCHEMA_DRIFT_CODE = the delta's (2), SQL_STATEMENT NULL, **RUN_GROUP DATA_PRIME**; a converted row keeps its id, SOURCE_NAME, SOURCE_PATH, LVL2 and PRIMARY_KEYS. **An existing JSON row is only fixed** in SQL_STATEMENT (NULL) and RUN_GROUP (DATA_PRIME). ACTIVE TRUE only while running |
 | EXTRACT_RUN_PLAN / logs | One plan per file. Old open plans of the row are abandoned | Same |
 | LOAD_META (auto, JOB_GROUP_SEQ 0) | Created by ATILDA for the test table; removed by cleanup with p_Delete_Test_Row | Used as is; created by ATILDA if missing |
 | BRONZE | `<T>_PRIME_TEST` created and filled; dropped by cleanup | `<T>` truncated, then loaded. The typed `<T>_VW` stays (the delta row maintains it) |
@@ -464,7 +469,7 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 | total_rows | from A4 (BRONZE held about 215M rows in Oct 2026) |
 | p_Rows_Per_File | e.g. 3000000 for about 215M rows (≈ 72 files, ≈ 2.5–6 hours of loading) |
 | enable_delta | true |
-| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 AEST daily (as defined in this repo for the new factory; check the old factory's trigger in ADF → Manage → Triggers) |
+| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time daily (as defined in this repo for the new factory; check the old factory's trigger in ADF → Manage → Triggers) |
 
 ### Status (2026-10-27)
 
@@ -478,12 +483,12 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
   - `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST","source_from":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"HistoryID"}]`
   - `p_Rows_Per_File = 50000`. That gives about 4 files.
 - **Cleanup (B4):** `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST"]`.
-- **Live dry run (C3):** the live p_Objects below, with `p_Prepare_Live_Row = false`. Expect `LIVE_ROW_NEEDS_CONVERT`.
+- **Live dry run (C3):** `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID","window_start":"2999-01-02","window_end":"2999-01-01"}]`, `p_Prepare_Live_Row = false`. Expect `LIVE_ROW_NEEDS_CONVERT`.
 - **Live (D1):**
   - `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID"}]`
   - `p_Window_Start = ""`, `p_Window_End = ""`, `p_Prepare_Live_Row = true`, `p_Enable_Delta = true`.
   - `p_Rows_Per_File` from the worksheet; `p_Batch_ID = PRIME_LIVE_PNCH_<yyyymmdd>`.
-  - Start well after the delta's daily run (06:00 AEST), so it finishes before the next one.
+  - Start well after the delta's daily run (06:00 Sydney time), so it finishes before the next one.
 - **Expected Prepare (D2):** `LIVE_ROW_CONVERTED`. 768 becomes `productnetworkcostshistory_part_%.json`, JSON, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME.
 
 ### Other tables ready to prime
@@ -504,7 +509,7 @@ Prepare converts each of them the same way. Start each with section 5 A.
 **Followed:**
 
 - **Pairing (sections 3 and 10).** The initial row shares STAGE_TABLE_NAME (and LVL2) with the delta row, and every FILE OBJECT_NAME contains `%`.
-- **New rows (section 3).** ACTIVE_FLAG starts FALSE. Nothing writes TRAN_WATERMARK, IDs or audit columns. SQL_COL_LIST stays NULL on initial rows, because the delta row maintains the typed view.
+- **New rows (section 3, checklist item 8).** ACTIVE_FLAG starts FALSE. Nothing writes TRAN_WATERMARK, IDs or audit columns. SQL_COL_LIST stays NULL on initial rows, because the delta row maintains the typed view.
 - **Cutover (section 10.2).** The delta is inactive from the truncate until the load passes. The window end is fixed once, so the delta continues from BRONZE MAX with no gap.
 - **File loads.** One plan per file through PR_CREATE_EXTRACT_RUN_PLAN_FILE, loaded **one at a time**: copy → source_rows_read → PR_CREATE_EXTRACT_ARTIFACTS → extract_run_plan_status COMPLETED. This is the house file pipelines' loop (TPL_E_FILE_PARQUET, DI_FILE_CSV_DFIO).
 - **Repeat priming (section 3).** File names are unique per run (RunId), so RELOAD_SAME_FILE_FLAG stays FALSE. BRONZE is cleared explicitly (checklist item 10).
@@ -514,7 +519,7 @@ Prepare converts each of them the same way. Start each with section 5 A.
 
 | ATILDA guide | Here | Why |
 |---|---|---|
-| Recipe B / section 10.3: initial rows in RUN_GROUP INITIAL, run through the DLA master pipeline | RUN_GROUP **DATA_PRIME**; the ATILDA procedures are called directly | No trigger runs DATA_PRIME, so nothing else picks up a row the prime holds ACTIVE, and the delta's SCMergeCO is never used (section 2) |
+| Recipe B / section 10.3: initial rows in RUN_GROUP INITIAL, run through the DLA master pipeline. Section 3 ("re-use an existing tag") and checklist item 7 ("a tag the master pipeline runs") | RUN_GROUP **DATA_PRIME**; the ATILDA procedures are called directly | No trigger runs DATA_PRIME, so nothing else picks up a row the prime holds ACTIVE, and the delta's SCMergeCO is never used (section 2) |
 | Recipe B: STAGE_FILE_TYPE PARQUET, SCHEMA_DRIFT_CODE 0, SQL_STATEMENT 1=1 | JSON (STAGE_FILE_TYPE/SPEC NULL), SCHEMA_DRIFT_CODE = the delta's (2), SQL_STATEMENT NULL | JSON is the RDBMS convention and needs no Java on the SHIR. 1=1 is not applied to FILE rows anyway (section 3); Begin truncates instead |
 | Section 2: back up to EXTRACT_META_BKP_*; OPS_DEV writes | Prepare returns OLD_VALUES in its output; all DML runs as the ADF role (CONTROL_DEV_RW) | No new objects in CONTROL. OPS_DEV cannot write CONTROL in DEV |
 | Section 8: abandon a plan with etlplan_status | Begin also logs extract_run_plan_status = ABANDONED | EXTRACT_RUN_PLAN_VW keeps a plan open until that status changes |
@@ -522,6 +527,9 @@ Prepare converts each of them the same way. Start each with section 5 A.
 | Section 10.3 step 11: restore the delta to its earlier flag | The delta ends ON when p_Enable_Delta is true and the checks pass | After a failed prime the delta is OFF, so "earlier flag" would keep it OFF for good. Use `"enable_delta":"false"` for deltas that are inactive on purpose |
 | PARALLEL_STAGE_LOAD_FLAG | Left at its value (new rows FALSE, the default) | Files load one at a time |
 | House pipelines log `dataRead` (bytes) as source_rows_read | Logs `rowsRead` (rows) | It is a row count |
+| Section 10.3 HistoryMonths (partial history with ClearTarget) | A live prime loads the full history only | Truncating with a start date drops older rows for good. This is a procedure rule (section 5 D1); the code does not enforce it |
+| Section 10.3 DryRun parameter | No DryRun parameter. The live dry run (section 5 C3) uses an impossible window and stops before Begin | No extra parameter or code path |
+| Section 10.3 step 10: bad_ts = 0 and max_wm ≤ Cutoff | End runs the delta's own snippet and requires its MAX watermark ≥ 1901-01-01. Single unparseable values are not counted | The delta's next run depends only on that MAX |
 
 ---
 
@@ -564,7 +572,7 @@ If a live run fails partway, re-run the whole prime. Begin abandons the failed a
 | sql/03_monitor.sql | Read-only: pair state, plans, rows per batch, handover watermark |
 | sql/10_source_query_test.sql | Generated SSMS dry run of Get source columns |
 
-Regenerate after any change to tools/, then reload the changed pipelines (section 3.2):
+Regenerate after any change to tools/ (run from `parquet_ingestion/`), then reload the changed pipelines (section 3.2):
 
 ```
 python3 tools/build_pipelines.py . old && python3 tools/check.py adf_old_json/pipeline   # cwr-ase-edp-dev-adf
@@ -590,7 +598,7 @@ python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pi
 
 ### Open items
 
-- **A. New factory gate** (section 3.1, G1–G3).
+- **A. New factory gate** (section 3.1, G1–G5).
 - **B. Copy to the ATILDA path re-serialises JSON** (JSON to JSON). Section 5 B3 checks the text. If it differs, switch to a byte copy on a new uncompressed Binary dataset with a File parameter.
 - **C. First live load into an existing, truncated BRONZE table.** Only new-table loads have run so far. End's reconcile is the safety net.
 - **D. Staged copies are never deleted.** They accumulate under the initial row's SOURCE_NAME folder, as for the house pipelines.

@@ -570,7 +570,7 @@ def main():
                  "__N__": str(ROWS_PER_FILE)}.items():
         test = test.replace(k, v)
     src = "tools/source_query.tsql"
-    header = (f"-- Dry run of the 'Get source columns' Lookup in {PL} (README.md section 4, step 3.7).\n"
+    header = (f"-- Dry run of the 'Get source columns' Lookup in {PL} (README.md section 5 A5).\n"
               "-- Read-only. Run in SSMS against the source database as the ADF SQL login.\n"
               "-- Edit the six DECLARE values below, then run. Expect ERROR_MESSAGE = '' and copy RANGES_SQL into a\n"
               "-- new window to see the batch ranges.\n"

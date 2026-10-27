@@ -1,4 +1,4 @@
--- Dry run of the 'Get source columns' Lookup in PL_ATILDA_DATA_PRIME_JSON (README.md section 4, step 3.7).
+-- Dry run of the 'Get source columns' Lookup in PL_ATILDA_DATA_PRIME_JSON (README.md section 5 A5).
 -- Read-only. Run in SSMS against the source database as the ADF SQL login.
 -- Edit the six DECLARE values below, then run. Expect ERROR_MESSAGE = '' and copy RANGES_SQL into a
 -- new window to see the batch ranges.

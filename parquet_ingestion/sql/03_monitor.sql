@@ -1,4 +1,4 @@
--- README.md section 4 (steps 1 and 6). Monitoring for data priming. Read-only.
+-- README.md section 5 B3 and E1. Monitoring for data priming. Read-only.
 -- The run's own record is the ADF run (Monitor): 'Get source columns' output has WINDOW_FILTER, 'Data in' returns
 -- batch_rows, 'End prime' returns the reconcile row.
 USE ROLE OPS_DEV_RO;   -- for a test prime, the test BRONZE table is owned by the ingestion role: use a role that can
@@ -8,7 +8,7 @@ USE DATABASE EDP_DEV;
 SET stage_table = 'DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY';   -- for a test prime: the *_PRIME_TEST name
 SET run_id      = '<RunId>';   -- the run's Trigger time in ADF Monitor, in UTC, as yyyyMMddHHmmss (e.g. 20261026031500)
 SET bronze_tbl  = 'EDP_DEV.BRONZE.' || $stage_table;
-SET wm_col      = 'REFRESHDATETIME';   -- delta watermark column, UPPERCASE as DLA stores it
+SET wm_col      = 'REFRESHDATETIME';   -- edit per table: the delta's watermark column, UPPERCASE as DLA stores it
 
 -- ===================================================================================================== A. State of the pair
 -- After a passed prime: initial row ACTIVE = FALSE, delta twin ACTIVE = TRUE (unless p_Enable_Delta = false).
