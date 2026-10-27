@@ -3,16 +3,19 @@ EXECUTE IMMEDIATE $$
 -- <table>_part_%.json, and SCHEMA_DRIFT_CODE is copied from the delta twin (2): JSON has no schema, so columns absent from
 -- the first file (all NULL there) are added later instead of being dropped. Live mode can also convert a Parquet
 -- INITIAL_LOAD row left by the retired Parquet build (opt-in, below).
+-- SOURCE_PATH is always the lowercase table name + '/': the row's own folder in the prime's landing container
+-- (p_Landing_Container, default json-priming). Only ADF reads it; Snowflake reads the staged copy in snowflake-data.
 -- 'Prepare row' Lookup: the setup DML, run as the ADF role (which holds CONTROL_DEV_RW), before 'Check pair'.
 --   Test  (source_from set, table = <source_from>_PRIME_TEST): create the test INITIAL_LOAD row from the live delta
---         twin if it does not exist yet. New, inactive, separate row; nothing existing changes.
---   Live  (no source_from): the live INITIAL_LOAD row must have SQL_STATEMENT NULL and RUN_GROUP DATA_PRIME. With p_Prepare_Live_Row = true, fix that one row (or create it if the table has
+--         twin if it does not exist yet, or move an existing inactive test row to the SOURCE_PATH convention.
+--   Live  (no source_from): the live INITIAL_LOAD row must have SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME and the
+--         SOURCE_PATH convention. With p_Prepare_Live_Row = true, fix that one row (or create it if the table has
 --         none); the old values are returned in OLD_VALUES (the ADF run output is the backup). Otherwise stop and
 --         say exactly what would change.
 --         If the table has no JSON initial row but exactly one Parquet INITIAL_LOAD row (an earlier Parquet onboarding),
 --         p_Prepare_Live_Row = true converts that row in place to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE and
---         STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from the delta twin) plus the fixes above. Its id, SOURCE_NAME and
---         SOURCE_PATH stay. OLD_VALUES holds every changed column, so the row can be put back by hand.
+--         STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from the delta twin) plus the fixes above. Its id and SOURCE_NAME
+--         stay. OLD_VALUES holds every changed column, so the row can be put back by hand.
 --   Anything else: no change; 'Check pair' reports the problem.
 -- CONTROL text columns carry a collation: COLLATE(col, '') before TRIM with characters and SPLIT_PART.
 -- Tokens {{...}} are replaced by tools/build_pipelines.py.
@@ -22,7 +25,7 @@ DECLARE
     v_action  VARCHAR DEFAULT 'NONE';
     v_table   VARCHAR DEFAULT UPPER(TRIM('{{TABLE}}'));
     v_src     VARCHAR DEFAULT UPPER(TRIM('{{SOURCE_FROM}}'));
-    v_path    VARCHAR;
+    v_path    VARCHAR DEFAULT LOWER(TRIM('{{TABLE}}')) || '/';   -- SOURCE_PATH convention
     n_delta   NUMBER DEFAULT 0;
     n_init    NUMBER DEFAULT 0;
     n_name    NUMBER DEFAULT 0;
@@ -46,10 +49,16 @@ BEGIN
         -- ---------------------------------------------------------------- test target
         SELECT COUNT(*) INTO :n_name FROM EDP_DEV.CONTROL.EXTRACT_META WHERE UPPER(STAGE_TABLE_NAME) = :v_table;
         IF (n_name > 0) THEN
+            -- Test rows belong to the prime: keep an inactive one on the SOURCE_PATH convention.
+            UPDATE EDP_DEV.CONTROL.EXTRACT_META SET SOURCE_PATH = :v_path
+            WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND NOT COALESCE(ACTIVE_FLAG, FALSE)
+              AND ENDSWITH(UPPER(SOURCE_NAME), '_PRIME_TEST_INITIAL_LOAD')
+              AND LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ '));
+            n_path := SQLROWCOUNT;
             v_action := 'TEST_ROW_EXISTS';
-            msg := 'Test row for ' || v_table || ' already exists.';
+            msg := 'Test row for ' || v_table || ' already exists.'
+                || IFF(n_path > 0, ' SOURCE_PATH moved to ' || v_path || '.', '');
         ELSE
-            v_path := 'data_prime_test/' || LOWER(v_table) || '/';
             SELECT COUNT(*) INTO :n_delta FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE UPPER(STAGE_TABLE_NAME) = :v_src AND SOURCE_TYPE = 'TABLE';
             SELECT COUNT(*) INTO :n_path FROM EDP_DEV.CONTROL.EXTRACT_META
@@ -101,9 +110,10 @@ BEGIN
           AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
         IF (n_init = 1) THEN
             SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'SQL_STATEMENT', SQL_STATEMENT,
-                                              'RUN_GROUP', RUN_GROUP, 'ACTIVE_FLAG', ACTIVE_FLAG)),
+                                              'RUN_GROUP', RUN_GROUP, 'SOURCE_PATH', SOURCE_PATH, 'ACTIVE_FLAG', ACTIVE_FLAG)),
                    COALESCE(ACTIVE_FLAG, FALSE),
-                   (SQL_STATEMENT IS NOT NULL OR UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) <> 'DATA_PRIME')
+                   (SQL_STATEMENT IS NOT NULL OR UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) <> 'DATA_PRIME'
+                    OR LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ ')))
             INTO :v_old, :v_active, :v_needs
             FROM EDP_DEV.CONTROL.EXTRACT_META WHERE EXTRACT_META_ID = :v_id;
             IF (NOT v_needs) THEN
@@ -112,15 +122,15 @@ BEGIN
             ELSEIF (NOT {{PREPARE_LIVE}}) THEN
                 v_status := 'ERROR';
                 v_action := 'LIVE_ROW_NEEDS_PREPARE';
-                msg := 'Initial row ' || v_id || ' needs SQL_STATEMENT NULL and RUN_GROUP '
-                    || 'DATA_PRIME (now ' || v_old || '). Nothing changed. Re-run with p_Prepare_Live_Row = true '
+                msg := 'Initial row ' || v_id || ' needs SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME and SOURCE_PATH '
+                    || v_path || ' (now ' || v_old || '). Nothing changed. Re-run with p_Prepare_Live_Row = true '
                     || 'to apply; the old values are recorded in this output.';
             ELSEIF (v_active) THEN
                 v_status := 'ERROR';
                 msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed.';
             ELSE
                 UPDATE EDP_DEV.CONTROL.EXTRACT_META
-                SET SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME'
+                SET SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME', SOURCE_PATH = :v_path
                 WHERE EXTRACT_META_ID = :v_id AND COALESCE(ACTIVE_FLAG, FALSE) = FALSE;
                 IF (SQLROWCOUNT = 0) THEN
                     v_status := 'ERROR';
@@ -136,7 +146,6 @@ BEGIN
             SELECT COUNT(*), MAX(EXTRACT_META_ID) INTO :n_pq, :v_id FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND UPPER(STAGE_FILE_TYPE) = 'PARQUET'
               AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
-            v_path := 'data_prime/' || LOWER(v_table) || '/';
             SELECT COUNT(*) INTO :n_path FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ '));
             IF (n_pq = 1) THEN
@@ -144,7 +153,8 @@ BEGIN
                 SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'OBJECT_NAME', OBJECT_NAME,
                                                   'STAGE_FILE_TYPE', STAGE_FILE_TYPE, 'STAGE_FILE_SPEC', STAGE_FILE_SPEC,
                                                   'SCHEMA_DRIFT_CODE', SCHEMA_DRIFT_CODE, 'SQL_STATEMENT', SQL_STATEMENT,
-                                                  'RUN_GROUP', RUN_GROUP, 'ACTIVE_FLAG', ACTIVE_FLAG)),
+                                                  'RUN_GROUP', RUN_GROUP, 'SOURCE_PATH', SOURCE_PATH,
+                                                  'ACTIVE_FLAG', ACTIVE_FLAG)),
                        COALESCE(ACTIVE_FLAG, FALSE)
                 INTO :v_old, :v_active
                 FROM EDP_DEV.CONTROL.EXTRACT_META WHERE EXTRACT_META_ID = :v_id;
@@ -153,8 +163,8 @@ BEGIN
                     v_action := 'LIVE_ROW_NEEDS_CONVERT';
                     msg := 'Initial row ' || v_id || ' is a Parquet row (now ' || v_old || '). The JSON prime needs it '
                         || 'converted to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, '
-                        || 'SCHEMA_DRIFT_CODE from the delta twin, SQL_STATEMENT NULL, '
-                        || 'RUN_GROUP DATA_PRIME). Nothing changed. Re-run with p_Prepare_Live_Row = true to apply; '
+                        || 'SCHEMA_DRIFT_CODE from the delta twin, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME, SOURCE_PATH '
+                        || v_path || '). Nothing changed. Re-run with p_Prepare_Live_Row = true to apply; '
                         || 'the old values are recorded in this output.';
                 ELSEIF (n_delta <> 1) THEN
                     v_status := 'ERROR';
@@ -166,7 +176,7 @@ BEGIN
                 ELSE
                     UPDATE EDP_DEV.CONTROL.EXTRACT_META m
                     SET OBJECT_NAME = d.OBJ, STAGE_FILE_TYPE = NULL, STAGE_FILE_SPEC = NULL, SCHEMA_DRIFT_CODE = d.SDC,
-                        SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME'
+                        SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME', SOURCE_PATH = :v_path
                     FROM (SELECT LOWER(SPLIT_PART(COLLATE(OBJECT_NAME, ''), '.', -1)) || '_part_%.json' AS OBJ,
                                  COALESCE(SCHEMA_DRIFT_CODE, 2) AS SDC
                           FROM EDP_DEV.CONTROL.EXTRACT_META

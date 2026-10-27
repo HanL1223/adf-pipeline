@@ -53,6 +53,7 @@ Every step, with what to expect, is in section 5.
 | **Test target** | `<T>_PRIME_TEST`: a separate BRONZE table with its own initial row, created automatically. A test prime never touches `<T>` or its delta row |
 | **Watermark column** `<wm>` | The column the delta's SQL_SNIPPET filters on, for example RefreshDatetime. Pass it as `window_column`. That is what makes the handover gap-free |
 | **Partition column** `<key>` | An integer column that leads an index, ideally the clustered primary key. Batches are split on it: one JSON file per `p_Rows_Per_File` rows |
+| **Landing container** `json-priming` | The prime's own container, on the same storage account as ATILDA's `snowflake-data`. Each table has one folder in it, named after the table in lowercase: `json-priming/<t>/`. That folder is the initial row's SOURCE_PATH. Only ADF reads it (section 3.1) |
 | **Run** | One trigger of PL_ATILDA_DATA_PRIME_JSON. Its **RunId** is the trigger time in UTC as `yyyyMMddHHmmss`. It appears in every file name (`<prefix>_part_<RunId>_b<k>_1.json`) and in `sql/03` |
 
 What one run does, per table (2 tables at a time):
@@ -64,9 +65,10 @@ Get source columns read-only, SQL Server: validate table/columns/window, build t
 Get batch ranges   read-only, SQL Server: key ranges, one per file; 0 batches = stop here
 ── nothing has changed in BRONZE or the delta row up to this point ──
 Begin prime        lock (initial row ACTIVE), close old plans, delta row OFF, TRUNCATE BRONZE
-Data in            SQL Server ─SHIR─> one gzip JSON file per batch (4 at a time) into the initial row's SOURCE_PATH
+Data in            SQL Server ─SHIR─> one gzip JSON file per batch (4 at a time) into json-priming/<table>/
 Data out           ATILDA plans one plan per file, then loads them one at a time:
-                   copy to ATILDA path → log rows → PR_CREATE_EXTRACT_ARTIFACTS → COMPLETED
+                   copy json-priming/<table>/<file> → snowflake-data/<ATILDA path> → log rows
+                   → PR_CREATE_EXTRACT_ARTIFACTS → COMPLETED
 End prime          reconcile (rows, per batch, other rows, duplicate keys, late delta plans), unlock,
                    delta row ON only if p_Enable_Delta and everything passed
 on failure after Begin: Abort (unlock, delta row stays OFF) → run fails
@@ -99,10 +101,31 @@ In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each tr
 
 ### 3.1 Choose the factory
 
-| Factory | Pipelines from | Container | Status |
-|---|---|---|---|
-| **cwr-ase-edp-dev-adf** (old) | `adf_old_json/pipeline/` | parameter `p_Staging_Container`, default `snowflake-data` (account cwraseedpdevst) | **Works.** Test run 4 passed |
-| **cwr-ae-dev-data-adf** (new) | `adf_new_json/pipeline/` | global `StagingContainer` (account cwraedevdata, container staging) | **Blocked** until checks G1–G5 below pass |
+| Factory | Pipelines from | Storage account | Landing container | ATILDA (staging) container | Status |
+|---|---|---|---|---|---|
+| **cwr-ase-edp-dev-adf** (old) | `adf_old_json/pipeline/` | cwraseedpdevst | `p_Landing_Container`, default `json-priming` | `p_Staging_Container`, default `snowflake-data` | **Works.** Test run 4 passed (with the earlier layout) |
+| **cwr-ae-dev-data-adf** (new) | `adf_new_json/pipeline/` | cwraedevdata | `p_Landing_Container`, default `json-priming` | global `StagingContainer` (staging) | **Blocked** until checks G1–G5 below pass |
+
+**Storage layout.** Every file is in two places:
+
+```
+cwraseedpdevst
+├─ json-priming/                         the prime's landing (only ADF reads and writes it)
+│   └─ <lowercase table>/                = the initial row's SOURCE_PATH
+│       └─ <prefix>_part_<RunId>_b<k>_1.json
+└─ snowflake-data/                       ATILDA's container (the only one Snowflake reads, through EDP_AZURE_SI_DEV)
+    └─ <initial SOURCE_NAME>/<LVL2>/<META_ID>_<PLAN_NO>/…_json_<plan>_<ts>.json   written by "Copy to BLOB"
+```
+
+The landing folder can live anywhere ADF can reach; the staged copy must be in `snowflake-data`. This is the house pattern: DI_FILE_CSV_DFIO lands in the SFTP account and copies into `snowflake-data`. Landing files are disposable once a prime passes. Staged copies stay, as for every ATILDA feed.
+
+**One-time container setup** (storage admin):
+
+1. Create the container `json-priming` in the storage account (private, no public access).
+2. Give the factory identity Storage Blob Data Contributor on it. If the role is already granted on the whole account, nothing is needed.
+3. Optional: add a lifecycle rule that deletes blobs in `json-priming` older than 30 days.
+
+No Snowflake or ATILDA change is needed.
 
 New factory gate:
 
@@ -118,13 +141,12 @@ New factory gate:
 
 ### 3.2 Load the pipelines into ADF
 
-Load these five files, **children first**:
+Load these four files, **children first**:
 
-1. PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE
-2. PL_ATILDA_DATA_PRIME_JSON_OUT
-3. PL_ATILDA_DATA_PRIME_JSON_IN
-4. PL_ATILDA_DATA_PRIME_JSON
-5. PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST
+1. PL_ATILDA_DATA_PRIME_JSON_OUT
+2. PL_ATILDA_DATA_PRIME_JSON_IN
+3. PL_ATILDA_DATA_PRIME_JSON
+4. PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST
 
 For each one, in ADF Studio:
 
@@ -136,8 +158,9 @@ Then:
 
 - Run **Validate all**. It must show no errors.
 - They appear under `ALTIDA/00 Templates/01 Extract/03 Data Prime JSON` (children in `/Child`).
-- New factory (git-integrated): you can also copy the five files into `data-factory/pipeline/` on a feature branch and open that branch in ADF Studio.
-- Reload all five whenever this repo changes them. The change log is in section 11.
+- New factory (git-integrated): you can also copy the four files into `data-factory/pipeline/` on a feature branch and open that branch in ADF Studio.
+- Reload all four whenever this repo changes them. The change log is in section 11.
+- PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE is no longer used (its steps are now inside _JSON_OUT). Delete it from the factory after loading the new _JSON_OUT.
 
 ### 3.3 Grants (Snowflake)
 
@@ -163,7 +186,7 @@ Fill this in during step A of section 5. Every later step uses these values.
 | Watermark column `<wm>` | delta row SQL_SNIPPET (the column in `WHERE <wm> > …`) | |
 | Partition column `<key>` | source table: integer, leads an index | |
 | Initial row id and state | sql/02 A/B: none (Prepare creates it), Parquet (`LIVE_ROW_NEEDS_CONVERT`), or JSON (`LIVE_ROW_READY` / `LIVE_ROW_NEEDS_PREPARE`) | |
-| Initial row SOURCE_PATH | sql/02 A (or `data_prime/<t>/` if Prepare creates it) | |
+| Initial row SOURCE_PATH | Always `<lowercase t>/` (its folder in `json-priming`). Prepare sets it | |
 | total_rows / null_wm / min_wm / max_wm | step A4 count | |
 | p_Rows_Per_File | 1,000,000 by default. For big tables, raise it (up to about 3,000,000) to keep files at ≤ 100 | |
 | enable_delta | `true` if the delta row is ACTIVE today; `false` if it is inactive on purpose | |
@@ -192,12 +215,12 @@ Snowflake queries run as a read role (OPS_DEV_RO) unless stated otherwise. Debug
 
   | FILE rows | What happens |
   |---|---|
-  | None | Prepare creates the JSON initial row at `data_prime/<t>/` |
+  | None | Prepare creates the JSON initial row, with SOURCE_PATH `<t>/` |
   | One Parquet INITIAL_LOAD row (`LIVE_ROW_NEEDS_CONVERT`) | Prepare converts it |
   | One JSON INITIAL_LOAD row | Ready, or Prepare fixes it |
   | Anything else | Stop and ask the ATILDA owners |
 
-- **Section C of sql/02:** the initial row's SOURCE_PATH is used once.
+- **Section C of sql/02:** the initial row's SOURCE_PATH is used once. If it is not `<t>/` yet, Prepare moves it (test rows automatically, the live row with `p_Prepare_Live_Row = true`).
 
 **A2. Run group.** Run the query in section 2. DATA_PRIME must hold only initial rows.
 
@@ -261,7 +284,7 @@ FROM <schema.table> WITH (NOLOCK);
 
 **B4. Clean up.** Run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST with `p_Tables = ["<T>_PRIME_TEST"]`.
 
-- It drops the test table and deletes the test landing files.
+- It drops the test table and deletes the test landing files (`json-priming/<t>_prime_test/*.json`).
 - Keep `p_Delete_Test_Row = false` to re-test later. Set it to `true` to also remove the test row and its auto LOAD_META row.
 
 ### C. Before the live prime
@@ -310,7 +333,8 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
 | p_Prepare_Live_Row | `true` | Lets Prepare create, convert or fix the initial row (once) |
 | p_Force | `false` | `true` only after a cancelled run (section 5 F) |
 | p_Batch_ID | e.g. `PRIME_LIVE_<T>_<yyyymmdd>` | Logged on every ATILDA plan |
-| p_Staging_Container | `snowflake-data` | Old factory only |
+| p_Landing_Container | `json-priming` | The landing container (section 3.1) |
+| p_Staging_Container | `snowflake-data` | Old factory only: ATILDA's container |
 
 **D2. Expect.** The "Must show" column below is the full list of outputs to check.
 
@@ -321,8 +345,8 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
 | Get source columns | ERROR_MESSAGE empty. WINDOW_FILTER has only the end bound, `AND [<wm>] < CONVERT(<type>, '<server clock>', 126)`, or `< <window_end>` for an integer watermark |
 | Get batch ranges | One row per batch (≈ total_rows / p_Rows_Per_File), plus batch 0 if the key has NULLs |
 | Begin prime | STATUS OK, "…delta twin <id> is OFF". **From here the live table is empty until the load finishes** |
-| Data in (child run) | One `<prefix>_part_<RunId>_b<k>_1.json` per batch in SOURCE_PATH. Output `batch_rows` |
-| Data out (child run) | Plans = files, then "Load files" runs them one at a time |
+| Data in (child run) | One `<prefix>_part_<RunId>_b<k>_1.json` per batch in `json-priming/<t>/`. Output `batch_rows` |
+| Data out (child run) | Plans = files, then "Load files" runs them one at a time: each copies its file to `snowflake-data/<SOURCE_NAME>/…` and loads it |
 | End prime | STATUS OK; ROWS_COPIED = BRONZE_ROWS; OTHER_ROWS 0; OPEN_PLANS 0; DUP_KEYS 0; BATCH_MISMATCH empty; **DELTA_RESTORED true** (false, with STATUS OK, when enable_delta is false) |
 
 **D3. Save the outputs.** Copy **Prepare row → OLD_VALUES** and **Get source columns → WINDOW_FILTER** (the handover time) somewhere safe.
@@ -351,7 +375,8 @@ Open the failed activity's error icon. For Data in or Data out, open the child p
 | Fails before Begin prime | Nothing changed (except Prepare's row setup, if `p_Prepare_Live_Row` was true) | Fix the cause and re-run |
 | Fails after Begin, or End STATUS ERROR | Lock released. **Delta row OFF** (live). BRONZE empty or partial | Fix the cause and re-run the **whole** prime. Restore the clone if the data is needed meanwhile |
 | End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners. Re-enabling the delta without a re-prime is the one manual exception: only a CONTROL_DEV_RW holder, with sign-off (sql/03 C) |
-| One file fails to load | The remaining files still load, then Abort runs | Read that file's _JSON_LOAD_FILE run, fix the cause and re-run |
+| One file fails to load | The remaining files still load, then Abort runs | In the _JSON_OUT run, open the failed "Load files" iteration, fix the cause and re-run |
+| Data in fails at "Check landing folder" or the extract with an authorization or container error | Begin has run: BRONZE truncated, delta row OFF | Check the `json-priming` container exists and the factory identity can write to it (section 3.1), then re-run |
 | The Begin prime activity itself fails (timeout or connection) | Begin may have committed (initial row ACTIVE, delta row OFF). Abort does not run | Check sql/03 A. If the initial row is ACTIVE, re-run with `p_Force = true` |
 | Run cancelled | Initial row ACTIVE (lock), delta row OFF (live) | Check in Monitor that nothing is running, then re-run with `p_Force = true` |
 | "… is ACTIVE: another prime is running, or one was cancelled" | Lock held | As above: confirm, then `p_Force = true` |
@@ -383,7 +408,8 @@ List them all in `p_Objects`. Each needs its own worksheet and its own passed te
 | p_Prepare_Live_Row | false | Live: allow Prepare to create, convert or fix the initial row |
 | p_Force | false | Take over a lock left by a cancelled run |
 | p_Batch_ID | `""` | Logged on each ATILDA plan |
-| p_Staging_Container | snowflake-data | Old factory only: the landing container |
+| p_Landing_Container | json-priming | The prime's landing container (all factories) |
+| p_Staging_Container | snowflake-data | Old factory only: ATILDA's container, where "Copy to BLOB" writes |
 
 `p_Objects` element keys:
 
@@ -407,13 +433,13 @@ List them all in `p_Objects`. Each needs its own worksheet and its own passed te
 
 | ACTION | Meaning |
 |---|---|
-| CREATED_TEST_ROW / TEST_ROW_EXISTS | Test row created / already there |
-| LIVE_ROW_READY | The initial row is already JSON, SQL_STATEMENT NULL, DATA_PRIME |
-| LIVE_ROW_NEEDS_PREPARE | It needs SQL_STATEMENT NULL / RUN_GROUP DATA_PRIME; re-run with p_Prepare_Live_Row = true |
-| LIVE_ROW_PREPARED | Those two columns were fixed (OLD_VALUES has the previous values) |
+| CREATED_TEST_ROW / TEST_ROW_EXISTS | Test row created / already there (its SOURCE_PATH is moved to `<t>/` if needed) |
+| LIVE_ROW_READY | The initial row is already JSON, SQL_STATEMENT NULL, DATA_PRIME, SOURCE_PATH `<t>/` |
+| LIVE_ROW_NEEDS_PREPARE | It needs SQL_STATEMENT NULL / RUN_GROUP DATA_PRIME / SOURCE_PATH `<t>/`; re-run with p_Prepare_Live_Row = true |
+| LIVE_ROW_PREPARED | Those columns were fixed (OLD_VALUES has the previous values) |
 | LIVE_ROW_NEEDS_CONVERT | It is a Parquet row; re-run with p_Prepare_Live_Row = true |
 | LIVE_ROW_CONVERTED | Converted to JSON (OLD_VALUES has the previous values) |
-| LIVE_ROW_MISSING / CREATED_LIVE_ROW | No initial row / one created at `data_prime/<t>/` |
+| LIVE_ROW_MISSING / CREATED_LIVE_ROW | No initial row / one created, with SOURCE_PATH `<t>/` |
 
 ### Error codes (ADF Fail activities)
 
@@ -443,7 +469,7 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 | Object | Test prime | Live prime |
 |---|---|---|
 | Delta row (`SOURCE_TYPE TABLE`) | Never touched | ACTIVE_FLAG FALSE from Begin; TRUE after a pass (p_Enable_Delta). Nothing else changes; its RUN_GROUP stays (e.g. SCMergeCO) |
-| Initial row (`FILE`, `…_INITIAL_LOAD`) | A separate test row `<T>_PRIME_TEST`, created once | Once, with p_Prepare_Live_Row. **Created or converted from Parquet** to: OBJECT_NAME `<t>_part_%.json`, STAGE_FILE_TYPE/SPEC NULL, SCHEMA_DRIFT_CODE = the delta's (2), SQL_STATEMENT NULL, **RUN_GROUP DATA_PRIME**; a converted row keeps its id, SOURCE_NAME, SOURCE_PATH, LVL2 and PRIMARY_KEYS. **An existing JSON row is only fixed** in SQL_STATEMENT (NULL) and RUN_GROUP (DATA_PRIME). ACTIVE TRUE only while running |
+| Initial row (`FILE`, `…_INITIAL_LOAD`) | A separate test row `<T>_PRIME_TEST`, created once with SOURCE_PATH `<t>_prime_test/`. An existing test row is moved to that path automatically | Once, with p_Prepare_Live_Row. **Created or converted from Parquet** to: OBJECT_NAME `<t>_part_%.json`, STAGE_FILE_TYPE/SPEC NULL, SCHEMA_DRIFT_CODE = the delta's (2), SQL_STATEMENT NULL, **RUN_GROUP DATA_PRIME**, **SOURCE_PATH `<t>/`**; a converted row keeps its id, SOURCE_NAME, LVL2 and PRIMARY_KEYS. **An existing JSON row is only fixed** in SQL_STATEMENT, RUN_GROUP and SOURCE_PATH. ACTIVE TRUE only while running |
 | EXTRACT_RUN_PLAN / logs | One plan per file. Old open plans of the row are abandoned | Same |
 | LOAD_META (auto, JOB_GROUP_SEQ 0) | Created by ATILDA for the test table; removed by cleanup with p_Delete_Test_Row | Used as is; created by ATILDA if missing |
 | BRONZE | `<T>_PRIME_TEST` created and filled; dropped by cleanup | `<T>` truncated, then loaded. The typed `<T>_VW` stays (the delta row maintains it) |
@@ -464,8 +490,8 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 | `<wm>` | RefreshDatetime (delta snippet: `WHERE RefreshDatetime > MAX(REFRESHDATETIME)` from BRONZE) |
 | `<key>` | HistoryID |
 | Initial row | **768**, Parquet (`productnetworkcostshistory_part_%.parquet`, SQL_STATEMENT 1=1, RUN_GROUP INITIAL), so `LIVE_ROW_NEEDS_CONVERT` |
-| SOURCE_PATH | `PDB08/stockdb/dbo.productnetworkcostshistory/` |
-| Test row | **790** (`DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST`, `data_prime_test/db_stockdb_productnetworkcostshistory_prime_test/`) |
+| SOURCE_PATH | Now `PDB08/stockdb/dbo.productnetworkcostshistory/`; the conversion moves it to `db_stockdb_productnetworkcostshistory/`, so files land in `json-priming/db_stockdb_productnetworkcostshistory/` |
+| Test row | **790** (`DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST`). Its SOURCE_PATH `data_prime_test/…` is moved to `db_stockdb_productnetworkcostshistory_prime_test/` on the next test run, so files land in `json-priming/db_stockdb_productnetworkcostshistory_prime_test/` |
 | total_rows | from A4 (BRONZE held about 215M rows in Oct 2026) |
 | p_Rows_Per_File | e.g. 3000000 for about 215M rows (≈ 72 files, ≈ 2.5–6 hours of loading) |
 | enable_delta | true |
@@ -475,7 +501,8 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 
 - Test run 4 passed in the old factory: 163,204 rows, one file.
 - A longer test (2024-07-01 to 2026-10-26, 50,000 rows per file) was run with the earlier build, which loaded files 4 at a time.
-- **Run section 5 B again with the current build before going live.** The one-at-a-time load is new.
+- **Run section 5 B again with the current build before going live.** The one-at-a-time load and the `json-priming` landing container are new.
+- The old landing files under `snowflake-data/data_prime_test/` are no longer used and can be deleted by hand.
 
 ### Exact parameters
 
@@ -489,7 +516,7 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
   - `p_Window_Start = ""`, `p_Window_End = ""`, `p_Prepare_Live_Row = true`, `p_Enable_Delta = true`.
   - `p_Rows_Per_File` from the worksheet; `p_Batch_ID = PRIME_LIVE_PNCH_<yyyymmdd>`.
   - Start well after the delta's daily run (06:00 Sydney time), so it finishes before the next one.
-- **Expected Prepare (D2):** `LIVE_ROW_CONVERTED`. 768 becomes `productnetworkcostshistory_part_%.json`, JSON, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME.
+- **Expected Prepare (D2):** `LIVE_ROW_CONVERTED`. 768 becomes `productnetworkcostshistory_part_%.json`, JSON, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME, SOURCE_PATH `db_stockdb_productnetworkcostshistory/`.
 
 ### Other tables ready to prime
 
@@ -511,7 +538,8 @@ Prepare converts each of them the same way. Start each with section 5 A.
 - **Pairing (sections 3 and 10).** The initial row shares STAGE_TABLE_NAME (and LVL2) with the delta row, and every FILE OBJECT_NAME contains `%`.
 - **New rows (section 3, checklist item 8).** ACTIVE_FLAG starts FALSE. Nothing writes TRAN_WATERMARK, IDs or audit columns. SQL_COL_LIST stays NULL on initial rows, because the delta row maintains the typed view.
 - **Cutover (section 10.2).** The delta is inactive from the truncate until the load passes. The window end is fixed once, so the delta continues from BRONZE MAX with no gap.
-- **File loads.** One plan per file through PR_CREATE_EXTRACT_RUN_PLAN_FILE, loaded **one at a time**: copy → source_rows_read → PR_CREATE_EXTRACT_ARTIFACTS → extract_run_plan_status COMPLETED. This is the house file pipelines' loop (TPL_E_FILE_PARQUET, DI_FILE_CSV_DFIO).
+- **File loads.** One plan per file through PR_CREATE_EXTRACT_RUN_PLAN_FILE, loaded **one at a time** in a single ForEach: copy → source_rows_read → PR_CREATE_EXTRACT_ARTIFACTS → extract_run_plan_status COMPLETED. This is the per-plan loop of the house file pipelines (DI_FILE_INITIAL_Shared_Parquet, DI_FILE_CSV_DFIO, TPL_E_FILE_PARQUET). Those cannot be called directly: TPL_E_FILE_PARQUET has no parameters, DI_FILE_CSV_DFIO is bound to the DFIO SFTP account and CSV, and DI_FILE_INITIAL_Shared_Parquet uses Parquet datasets and ends with PR_BULKLOAD_PARQUET.
+- **Landing outside the ATILDA container.** Files are extracted to `json-priming` and copied into `snowflake-data` per plan, as DI_FILE_CSV_DFIO does from the SFTP account.
 - **Repeat priming (section 3).** File names are unique per run (RunId), so RELOAD_SAME_FILE_FLAG stays FALSE. BRONZE is cleared explicitly (checklist item 10).
 - **LOAD_META (section 1).** It is auto-generated and never hand-written.
 
@@ -561,8 +589,8 @@ If a live run fails partway, re-run the whole prime. Begin abandons the failed a
 
 | Path | What it is |
 |---|---|
-| adf_old_json/pipeline/ | The 5 pipelines for cwr-ase-edp-dev-adf |
-| adf_new_json/pipeline/ | The 5 pipelines for cwr-ae-dev-data-adf |
+| adf_old_json/pipeline/ | The 4 pipelines for cwr-ase-edp-dev-adf |
+| adf_new_json/pipeline/ | The 4 pipelines for cwr-ae-dev-data-adf |
 | tools/build_pipelines.py | Generates both builds and sql/10. **Never hand-edit the pipeline JSON** |
 | tools/source_query.tsql | Get source columns (T-SQL) |
 | tools/sf_prepare.sql, sf_check_pair.sql, sf_begin.sql, sf_end.sql, sf_cleanup_test.sql | The Snowflake blocks (EXECUTE IMMEDIATE) used by the Lookups |
@@ -595,6 +623,8 @@ python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pi
 | 10 | Run stops before Begin when there are no rows to load |
 | 11 | source_rows_read logged per plan |
 | 12 | Unused parameters removed; leftover template tokens fail the build |
+| 13 | Landing moved to its own container `json-priming` (p_Landing_Container); SOURCE_PATH is always `<lowercase table>/`. ATILDA staging stays in `snowflake-data` |
+| 14 | PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE merged into _JSON_OUT ("Load files" ForEach, house shape): 4 pipelines instead of 5 |
 
 ### Open items
 

@@ -140,11 +140,11 @@
                                     "type": "DatasetReference",
                                     "parameters": {
                                         "Folder": {
-                                            "value": "@coalesce(activity('Cleanup test target').output.firstRow.SOURCE_PATH, 'data_prime_test/__none__/')",
+                                            "value": "@coalesce(activity('Cleanup test target').output.firstRow.SOURCE_PATH, '__none__/')",
                                             "type": "Expression"
                                         },
                                         "Container": {
-                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "value": "@pipeline().parameters.p_Landing_Container",
                                             "type": "Expression"
                                         }
                                     }
@@ -201,7 +201,7 @@
                                                         "type": "Expression"
                                                     },
                                                     "Container": {
-                                                        "value": "@pipeline().globalParameters.StagingContainer",
+                                                        "value": "@pipeline().parameters.p_Landing_Container",
                                                         "type": "Expression"
                                                     }
                                                 }
@@ -230,6 +230,10 @@
             "p_Delete_Test_Row": {
                 "type": "bool",
                 "defaultValue": false
+            },
+            "p_Landing_Container": {
+                "type": "string",
+                "defaultValue": "json-priming"
             }
         },
         "variables": {},

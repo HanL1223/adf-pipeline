@@ -25,21 +25,23 @@ ORDER BY STAGE_TABLE_NAME, SOURCE_TYPE, EXTRACT_META_ID;
 -- ===================================================================================================== B. What 'Prepare row' would do (live)
 -- LIVE_ROW_READY         : nothing to change.
 -- LIVE_ROW_NEEDS_PREPARE : the live prime stops unless p_Prepare_Live_Row = true; then exactly this row changes
---                          (SQL_STATEMENT -> NULL, RUN_GROUP -> DATA_PRIME).
--- JSON build (PL_ATILDA_DATA_PRIME_JSON) only:
--- LIVE_ROW_NEEDS_CONVERT : a Parquet row. With p_Prepare_Live_Row = true the JSON prime converts it in place
+--                          (SQL_STATEMENT -> NULL, RUN_GROUP -> DATA_PRIME, SOURCE_PATH -> <lowercase table>/).
+-- LIVE_ROW_NEEDS_CONVERT : a Parquet row. With p_Prepare_Live_Row = true the prime converts it in place
 --                          (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from
---                          the delta twin, plus the two fixes above). Save this output first: it is the backup.
+--                          the delta twin, plus the three fixes above). Save this output first: it is the backup.
 SELECT EXTRACT_META_ID, OBJECT_NAME, STAGE_FILE_TYPE, STAGE_FILE_SPEC, SCHEMA_DRIFT_CODE, SQL_STATEMENT,
        PARALLEL_STAGE_LOAD_FLAG, RUN_GROUP, ACTIVE_FLAG, SOURCE_PATH,
        CASE WHEN UPPER(STAGE_FILE_TYPE) = 'PARQUET' THEN 'LIVE_ROW_NEEDS_CONVERT (JSON build)'
-            WHEN SQL_STATEMENT IS NULL AND UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) = 'DATA_PRIME' THEN 'LIVE_ROW_READY'
+            WHEN SQL_STATEMENT IS NULL AND UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) = 'DATA_PRIME'
+                 AND LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) = LOWER($stage_table) THEN 'LIVE_ROW_READY'
             ELSE 'LIVE_ROW_NEEDS_PREPARE' END AS PREPARE
 FROM CONTROL.EXTRACT_META
 WHERE UPPER(STAGE_TABLE_NAME) = UPPER($stage_table) AND SOURCE_TYPE = 'FILE'
   AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
 
 -- ===================================================================================================== C. SOURCE_PATH must be unique
+-- The convention is <lowercase table>/ (the row's folder in the landing container, json-priming); a path shared by
+-- two rows would let one prime clear the other's files.
 SELECT LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) AS SOURCE_PATH, COUNT(*) AS ROWS_USING_IT
 FROM CONTROL.EXTRACT_META
 WHERE UPPER(STAGE_TABLE_NAME) IN (UPPER($stage_table), UPPER($stage_table) || '_PRIME_TEST') AND SOURCE_TYPE = 'FILE'

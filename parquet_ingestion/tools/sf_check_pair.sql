@@ -1,4 +1,5 @@
--- The initial row must stage JSON (STAGE_FILE_TYPE NULL) with OBJECT_NAME <prefix>_part_%.json.
+-- The initial row must stage JSON (STAGE_FILE_TYPE NULL) with OBJECT_NAME <prefix>_part_%.json and SOURCE_PATH
+-- <lowercase table>/ (its folder in the landing container).
 -- 'Check pair' Lookup (read-only). Finds the INITIAL_LOAD / delta pair of one STAGE_TABLE_NAME, validates it and
 -- derives everything later steps need. Tokens {{...}} are replaced by tools/build_pipelines.py.
 -- Test mode: when source_from names another (live) table, the delta twin is looked up under that name and used
@@ -63,7 +64,10 @@ SELECT
                           || '''; it must be NULL (1=1 deletes BRONZE before every file). Re-run with p_Prepare_Live_Row = true.'
         WHEN UPPER(COALESCE(i_group, '')) <> 'DATA_PRIME' THEN 'Initial row ' || i_id || ' RUN_GROUP is '
                           || COALESCE(i_group, 'NULL') || '; it must be DATA_PRIME so no trigger runs it. Re-run with p_Prepare_Live_Row = true.'
-        WHEN NULLIF(TRIM(i_path), '') IS NULL THEN 'Initial row ' || i_id || ' has no SOURCE_PATH.'
+        WHEN LOWER(TRIM(COALESCE(i_path, ''), '/ ')) <> LOWER(TRIM('{{TABLE}}'))
+             THEN 'Initial row ' || i_id || ' SOURCE_PATH must be ' || LOWER(TRIM('{{TABLE}}')) || '/ (its folder in the '
+                  || 'landing container), got ' || COALESCE(i_path, 'NULL') || '. Re-run: Prepare moves a test row itself; '
+                  || 'a live row needs p_Prepare_Live_Row = true.'
         WHEN i_object IS NULL OR NOT ENDSWITH(LOWER(i_object), '_part_%.json') OR LENGTH(i_object) <= 12
              OR CONTAINS(LEFT(i_object, LENGTH(i_object) - 12), '%')
              THEN 'Initial row ' || i_id || ' OBJECT_NAME must be <prefix>_part_%.json, got ' || COALESCE(i_object, 'NULL') || '.'

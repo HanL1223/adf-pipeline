@@ -1,7 +1,7 @@
 {
     "name": "PL_ATILDA_DATA_PRIME_JSON_IN",
     "properties": {
-        "description": "Data prime, part 1 (data in): extract one SQL Server table to JSON part files in <StagingContainer>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME_JSON before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
+        "description": "Data prime, part 1 (data in): extract one SQL Server table to JSON part files in <p_Landing_Container>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME_JSON before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
         "activities": [
             {
                 "name": "Check landing folder",
@@ -25,7 +25,7 @@
                                 "type": "Expression"
                             },
                             "Container": {
-                                "value": "@pipeline().globalParameters.StagingContainer",
+                                "value": "@pipeline().parameters.p_Landing_Container",
                                 "type": "Expression"
                             }
                         }
@@ -82,7 +82,7 @@
                                             "type": "Expression"
                                         },
                                         "Container": {
-                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "value": "@pipeline().parameters.p_Landing_Container",
                                             "type": "Expression"
                                         }
                                     }
@@ -194,7 +194,7 @@
                                             "type": "Expression"
                                         },
                                         "Container": {
-                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "value": "@pipeline().parameters.p_Landing_Container",
                                             "type": "Expression"
                                         }
                                     }
@@ -274,6 +274,10 @@
             },
             "p_Batches": {
                 "type": "array"
+            },
+            "p_Landing_Container": {
+                "type": "string",
+                "defaultValue": "json-priming"
             }
         },
         "variables": {
