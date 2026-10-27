@@ -421,7 +421,7 @@ def parent(tsql):
             depends=[("Get batch ranges", "Succeeded")],
             true=[fail("Raise no rows", f"@concat(item().table, ': no rows in the window; nothing to prime. BRONZE not touched.')",
                        "PRIME_NO_ROWS")]),
-        # Read probe of the landing container before Begin: a missing container or no read access fails while nothing
+        # Read probe of the landing container before Begin: no read access fails while nothing
         # has changed. Old part files are cleared by Data in, after the lock.
         {"name": "Check landing folder", "type": "GetMetadata", "dependsOn": dep(("Check batch ranges", "Succeeded")),
          "policy": policy("0.01:00:00", 2), "userProperties": [],
