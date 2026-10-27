@@ -174,7 +174,7 @@ def load_file():
                 # House file pipelines log source_rows_read after the copy (they log dataRead; rowsRead is the row count).
                 sf_lookup("Update source rows read",
                           f"CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{{{plan}}}, '@{{variables('vConst_Rows_Read')}}', "
-                          "'@{string(activity('Copy to BLOB').output.rowsRead)}', 'Successful');",
+                          "'@{string(coalesce(activity('Copy to BLOB').output?.rowsRead, 0))}', 'Successful');",
                           depends=[("Copy to BLOB", "Succeeded")], retry=2),
                 sf_lookup("Complete BLOB copy", log("vConst_BlobCopy_Status", "vConst_Complete", "'Successful'"),
                           depends=[("Update source rows read", "Succeeded")], retry=2),

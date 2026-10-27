@@ -164,7 +164,7 @@
                                 "source": {
                                     "type": "SnowflakeV2Source",
                                     "query": {
-                                        "value": "CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{pipeline().parameters.p_Extract_Run_Plan_Id}, '@{variables('vConst_Rows_Read')}', '@{string(activity('Copy to BLOB').output.rowsRead)}', 'Successful');",
+                                        "value": "CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{pipeline().parameters.p_Extract_Run_Plan_Id}, '@{variables('vConst_Rows_Read')}', '@{string(coalesce(activity('Copy to BLOB').output?.rowsRead, 0))}', 'Successful');",
                                         "type": "Expression"
                                     },
                                     "exportSettings": {

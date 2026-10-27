@@ -322,5 +322,5 @@ Nothing is configured by hand. Section 10.3 of the skill lists twins that alread
 - **A. New factory gate** (section 3, G1–G3).
 - **B. Copy to BLOB re-serialises every record (JSON to JSON).** Step 1.4 checks the text. If it changes, switch to a byte copy on a new uncompressed Binary dataset with a File parameter.
 - **C. First live load into an existing, truncated BRONZE table.** Only a new-table load has run so far. End's reconcile is the safety net: on any mismatch the delta stays OFF.
-- **E. Batch rows are collected with AppendVariable in a parallel ForEach.** ADF does not guarantee this is thread-safe. A lost append fails safe (End reports a batch mismatch and the delta stays OFF), but it would fail a long run for nothing. Proven so far with one batch only; the step 2.7 test covers several.
 - **D. Staged copies are never deleted.** They pile up under LVL1_FOLDER_NAME, as they do for the house pipelines.
+- **E. Batch rows are collected with AppendVariable in a parallel ForEach.** ADF does not guarantee this is thread-safe. A lost append fails safe (End reports a batch mismatch and the delta stays OFF), but it would fail a long run for nothing. Test run 4 had one batch; the step 2.7 test covers several.
