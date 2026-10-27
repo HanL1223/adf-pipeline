@@ -1,0 +1,23 @@
+{
+	"name": "NetworkDrive_CWVault",
+	"properties": {
+		"annotations": [],
+		"type": "FileServer",
+		"typeProperties": {
+			"host": "\\\\192.168.42.235\\Everyone",
+			"userId": "MYCHEMIST\\servac_edp_tactical",
+			"password": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": "CWVault-servac-edp-tactical-Password"
+			}
+		},
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

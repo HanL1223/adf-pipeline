@@ -1,0 +1,37 @@
+{
+	"name": "SCMergeCODFIO-DailyLoad",
+	"properties": {
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "DI_FILE_CSV_DFIO",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "DFIO_SC_MASTER_CSV",
+					"p_Run_Group": "SCMergeCO",
+					"p_Batch_ID": null
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2026-10-01T07:04:00",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						10
+					],
+					"hours": [
+						6
+					]
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,825 @@
+{
+	"name": "DI_RDBMS_Shared_SQL_Server",
+	"properties": {
+		"description": "Generic RDBMS ingestion pipeline (parameterized LS & DS)” .RDBMS with JSON stage , basic load pattern using SNOWFLAKE V2 connector with col list. Included run_tag changes. Added BATCH_ID.",
+		"activities": [
+			{
+				"name": "Loop through source objects",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get run plan",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Get run plan').output.value",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Check if blobcopy is COMPLETE",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "If BATCH ID exists",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@concat(item().OBJECT_NAME)"
+								},
+								{
+									"name": "IFCONDITION_EXPRESSION",
+									"value": "@equals(item().BLOB_COPY_STATUS,variables('vConst_Complete'))"
+								}
+							],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().SOURCE_EXTRACT_STATUS,variables('vConst_Complete'))",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Copy to BLOB",
+										"type": "Copy",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SqlServerSource",
+												"sqlReaderQuery": {
+													"value": "@{item().SOURCE_SNIPPET}",
+													"type": "Expression"
+												},
+												"queryTimeout": "02:00:00",
+												"partitionOption": "None"
+											},
+											"sink": {
+												"type": "JsonSink",
+												"storeSettings": {
+													"type": "AzureBlobStorageWriteSettings"
+												},
+												"formatSettings": {
+													"type": "JsonWriteSettings"
+												}
+											},
+											"enableStaging": false
+										},
+										"inputs": [
+											{
+												"referenceName": "DS_SQLServer_Shared",
+												"type": "DatasetReference",
+												"parameters": {
+													"ServerName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].ServerName",
+														"type": "Expression"
+													},
+													"DatabaseName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].DatabaseName",
+														"type": "Expression"
+													},
+													"UserNameSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].UserNameSecretName",
+														"type": "Expression"
+													},
+													"PasswordSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].PasswordSecretName",
+														"type": "Expression"
+													}
+												}
+											}
+										],
+										"outputs": [
+											{
+												"referenceName": "DS_Storage_Stage_JSON",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": "@{item().LVL1_FOLDER_NAME}",
+													"File": {
+														"value": "@{item().FILE_NAME}",
+														"type": "Expression"
+													},
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"name": "Complete BLOB copy",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Update source rows read",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''',''Successful'');')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake_Wh",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Fail BLOB copy",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Set vCopy_Error",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Fail'),''',$$',variables('vCopy_Error'),'$$);')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake_Wh",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Set vRows_Read",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy to BLOB",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "vRows_Read",
+											"value": {
+												"value": "@string(activity('Copy to BLOB').output.rowsRead)\n",
+												"type": "Expression"
+											}
+										}
+									},
+									{
+										"name": "Update source rows read",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Set vRows_Read",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_Rows_Read'),''',''',variables('vRows_Read'),''',''Successful'');')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake_Wh",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Set vCopy_Error",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy to BLOB",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "vCopy_Error",
+											"value": {
+												"value": "@string(activity('Copy to BLOB').output.errors)",
+												"type": "Expression"
+											}
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "Provision SI artifacts and load data",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Check if source col list is required",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME "
+								},
+								{
+									"name": "CALL _COMMAND",
+									"value": "@concat('CALL CONTROL.PR_CREATE_SI_ARTIFACTS (',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_CREATE_EXTRACT_ARTIFACTS (',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')\n",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake_Wh",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Set new watermark",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Provision SI artifacts and load data",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME "
+								},
+								{
+									"name": "CALL _COMMAND",
+									"value": "@concat('CALL CONTROL.PR_CREATE_SI_ARTIFACTS (',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_SET_EXTRACT_WATERMARK(',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake_Wh",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Complete ETL run",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Set new watermark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME  "
+								},
+								{
+									"name": "CALL_COMMAND",
+									"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_Run_Status'),''',''',variables('vConst_Complete'),''',''Successful'');')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake_Wh",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Skip  source archive",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Check if source col list is required",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME  "
+								},
+								{
+									"name": "CALL_COMMAND",
+									"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_SourceArchive_Status'),''',''',variables('vConst_Skip'),''',''Successful'');')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake_Wh",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Check if source col list is required",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Check if blobcopy is COMPLETE",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@and(equals(item().COL_LIST_SNIPPET,''),not(equals(item().COL_LIST_STATUS,'')))\n \n ",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Get source column list",
+										"type": "Lookup",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SqlServerSource",
+												"sqlReaderQuery": {
+													"value": "@{item().COL_LIST_SNIPPET}",
+													"type": "Expression"
+												},
+												"queryTimeout": "02:00:00",
+												"partitionOption": "None"
+											},
+											"dataset": {
+												"referenceName": "DS_SQLServer_Shared",
+												"type": "DatasetReference",
+												"parameters": {
+													"ServerName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].ServerName",
+														"type": "Expression"
+													},
+													"DatabaseName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].DatabaseName",
+														"type": "Expression"
+													},
+													"UserNameSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].UserNameSecretName",
+														"type": "Expression"
+													},
+													"PasswordSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].PasswordSecretName",
+														"type": "Expression"
+													}
+												}
+											}
+										}
+									},
+									{
+										"name": "Log col list",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Get source column list",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', 'col_list',''',''','COMPLETED',''',$$',activity('Get source column list').output.firstRow.col_list,'$$);')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake_Wh",
+												"type": "DatasetReference"
+											},
+											"firstRowOnly": true
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "If BATCH ID exists",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(pipeline().parameters.p_Batch_ID,'')",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "SET BATCH ID",
+										"type": "Lookup",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_Batch_Id'),''',''',pipeline().parameters.p_Batch_ID,''',''Successful'');')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Get run plan",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Set AndClause",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [
+					{
+						"name": "CALL_COMMAND",
+						"value": "@concat('SELECT  * FROM  CONTROL.ETL_RUN_PLAN_VW WHERE SOURCE_NAME =''',variables('vSource_Name'),'''')"
+					}
+				],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('SELECT  * FROM\n CONTROL.EXTRACT_RUN_PLAN_VW WHERE SOURCE_NAME =''',pipeline().parameters.p_Source_Name,'''',variables('vAndClause'))",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake_Wh",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Generate run plan",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('CALL CONTROL.PR_CREATE_EXTRACT_RUN_PLAN(''',pipeline().parameters.p_Source_Name,''',''',pipeline().parameters.p_Run_Group,''',''0'',''0'')')",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake_Wh",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "Set AndClause",
+				"type": "SetVariable",
+				"dependsOn": [
+					{
+						"activity": "Generate run plan",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "vAndClause",
+					"value": {
+						"value": "@if(endswith(pipeline().parameters.p_Run_Group,'ALL'),'', concat(' AND CONTAINS(RUN_GROUP,''',replace(pipeline().parameters.p_Run_Group,'GRP:',''),''') = TRUE'))",
+						"type": "Expression"
+					}
+				}
+			}
+		],
+		"parameters": {
+			"p_Source_Name": {
+				"type": "string",
+				"defaultValue": "SCAX2012"
+			},
+			"p_Run_Group": {
+				"type": "string",
+				"defaultValue": "GRP:INCREMENTAL"
+			},
+			"p_Batch_ID": {
+				"type": "string"
+			}
+		},
+		"variables": {
+			"vConst_Complete": {
+				"type": "String",
+				"defaultValue": "COMPLETED"
+			},
+			"vConst_Fail": {
+				"type": "String",
+				"defaultValue": "FAILED"
+			},
+			"vConst_BlobCopy_Status": {
+				"type": "String",
+				"defaultValue": "source_extract_status"
+			},
+			"vConst_Provision_Status": {
+				"type": "String",
+				"defaultValue": "provision_status"
+			},
+			"vConst_Run_Status": {
+				"type": "String",
+				"defaultValue": "extract_run_plan_status"
+			},
+			"vConst_Rows_Read": {
+				"type": "String",
+				"defaultValue": "source_rows_read"
+			},
+			"vConst_Rows_Copied": {
+				"type": "String",
+				"defaultValue": "source_rows_copied"
+			},
+			"vRows_Read": {
+				"type": "String",
+				"defaultValue": "0"
+			},
+			"vRows_Copied": {
+				"type": "String",
+				"defaultValue": "0"
+			},
+			"vStage_File_Type": {
+				"type": "String",
+				"defaultValue": "JSON"
+			},
+			"vConst_SourceArchive_Status": {
+				"type": "String",
+				"defaultValue": "source_archive_status"
+			},
+			"vConst_Skip": {
+				"type": "String",
+				"defaultValue": "SKIPPED"
+			},
+			"vConst_StageArchive_Status": {
+				"type": "String",
+				"defaultValue": "stage_archive_status"
+			},
+			"vCopy_Error": {
+				"type": "String"
+			},
+			"vSnowflake_Database": {
+				"type": "String",
+				"defaultValue": "SnowflakeDatabase"
+			},
+			"vAndClause": {
+				"type": "String"
+			},
+			"vConst_Batch_Id": {
+				"type": "String",
+				"defaultValue": "batch_id"
+			},
+			"vSource_Name": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "DATA IN/Shared"
+		},
+		"annotations": [],
+		"lastPublishTime": "2025-04-04T04:25:42Z"
+	}
+}

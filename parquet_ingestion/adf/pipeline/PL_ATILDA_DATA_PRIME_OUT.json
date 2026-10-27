@@ -1,0 +1,404 @@
+{
+    "name": "PL_ATILDA_DATA_PRIME_OUT",
+    "properties": {
+        "description": "Data prime, part 2 (data out): plan this run's Parquet files in ATILDA (one plan per file) and load them into BRONZE. Called by PL_ATILDA_DATA_PRIME.",
+        "activities": [
+            {
+                "name": "Get File Metadata",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "description": "exists is listed so a missing folder (0 rows extracted) does not fail the activity.",
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "Folder": {
+                                "value": "@pipeline().parameters.p_Source_Path",
+                                "type": "Expression"
+                            },
+                            "Container": {
+                                "value": "@pipeline().parameters.p_Staging_Container",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "fieldList": [
+                        "exists",
+                        "childItems"
+                    ],
+                    "storeSettings": {
+                        "type": "AzureBlobStorageReadSettings",
+                        "recursive": false
+                    },
+                    "formatSettings": {
+                        "type": "BinaryReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "Keep run files",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "Get File Metadata",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@coalesce(activity('Get File Metadata').output?.childItems, json('[]'))",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@and(equals(item().type, 'File'), and(startswith(item().name, concat(pipeline().parameters.p_File_Prefix, '_part_', pipeline().parameters.p_Run_Id, '_')), endswith(toLower(item().name), '.parquet')))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Check file count",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "Keep run files",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@greater(length(activity('Keep run files').output.Value), int(variables('vConst_Max_Files')))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Raise too many files",
+                            "type": "Fail",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "@concat(string(length(activity('Keep run files').output.Value)), ' files exceed the ', variables('vConst_Max_Files'), '-row Lookup limit. Raise p_Rows_Per_File and re-run.')",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "PRIME_TOO_MANY_FILES"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Plan new files",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "Check file count",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@greater(length(activity('Keep run files').output.Value), 0)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Generate Run Plan",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SnowflakeV2Source",
+                                    "query": {
+                                        "value": "CALL CONTROL.PR_CREATE_EXTRACT_RUN_PLAN_FILE('@{replace(pipeline().parameters.p_Initial_Source_Name, '''', '''''')}', '@{replace(pipeline().parameters.p_Source_Path, '''', '''''')}', $$@{string(activity('Keep run files').output.Value)}$$, '0', '0');",
+                                        "type": "Expression"
+                                    },
+                                    "exportSettings": {
+                                        "type": "SnowflakeExportCopyCommand"
+                                    }
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_Snowflake_Wh",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Get run plan",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "Plan new files",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SnowflakeV2Source",
+                        "query": {
+                            "value": "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW WHERE EXTRACT_META_ID = @{pipeline().parameters.p_Initial_Meta_Id} AND CONTAINS(FILE_NAME, '_part_@{pipeline().parameters.p_Run_Id}_') ORDER BY FILE_NAME",
+                            "type": "Expression"
+                        },
+                        "exportSettings": {
+                            "type": "SnowflakeExportCopyCommand"
+                        }
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Snowflake_Wh",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "Check plan count",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "Get run plan",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@not(equals(length(activity('Get run plan').output.value), length(activity('Keep run files').output.Value)))",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Raise plan count mismatch",
+                            "type": "Fail",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "@concat('ATILDA planned ', string(length(activity('Get run plan').output.value)), ' of ', string(length(activity('Keep run files').output.Value)), ' files for run ', pipeline().parameters.p_Run_Id, '. Check CONTROL.EXTRACT_RUN_PLAN_STATUS_VW.')",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "PRIME_PLAN_COUNT_MISMATCH"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Load first file",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Check plan count",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "Loads one file alone first, so DLA creates the BRONZE table once.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@take(activity('Get run plan').output.value, 1)",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "Load file",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_ATILDA_DATA_PRIME_LOAD_FILE",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "p_Extract_Run_Plan_Id": {
+                                        "value": "@string(item().EXTRACT_RUN_PLAN_ID)",
+                                        "type": "Expression"
+                                    },
+                                    "p_Extract_Meta_Id": {
+                                        "value": "@string(item().EXTRACT_META_ID)",
+                                        "type": "Expression"
+                                    },
+                                    "p_File_Name": {
+                                        "value": "@item().FILE_NAME",
+                                        "type": "Expression"
+                                    },
+                                    "p_Source_Path": {
+                                        "value": "@item().SOURCE_PATH",
+                                        "type": "Expression"
+                                    },
+                                    "p_Lvl1_Folder_Name": {
+                                        "value": "@item().LVL1_FOLDER_NAME",
+                                        "type": "Expression"
+                                    },
+                                    "p_Source_Extract_Status": {
+                                        "value": "@coalesce(item().SOURCE_EXTRACT_STATUS, '')",
+                                        "type": "Expression"
+                                    },
+                                    "p_Batch_ID": {
+                                        "value": "@pipeline().parameters.p_Batch_ID",
+                                        "type": "Expression"
+                                    },
+                                    "p_Staging_Container": {
+                                        "value": "@pipeline().parameters.p_Staging_Container",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Load other files",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Load first file",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "description": "Files hold disjoint rows (PARALLEL_STAGE_LOAD_FLAG = TRUE), so they load in parallel.",
+                "typeProperties": {
+                    "items": {
+                        "value": "@skip(activity('Get run plan').output.value, 1)",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 4,
+                    "activities": [
+                        {
+                            "name": "Load other file",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_ATILDA_DATA_PRIME_LOAD_FILE",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "p_Extract_Run_Plan_Id": {
+                                        "value": "@string(item().EXTRACT_RUN_PLAN_ID)",
+                                        "type": "Expression"
+                                    },
+                                    "p_Extract_Meta_Id": {
+                                        "value": "@string(item().EXTRACT_META_ID)",
+                                        "type": "Expression"
+                                    },
+                                    "p_File_Name": {
+                                        "value": "@item().FILE_NAME",
+                                        "type": "Expression"
+                                    },
+                                    "p_Source_Path": {
+                                        "value": "@item().SOURCE_PATH",
+                                        "type": "Expression"
+                                    },
+                                    "p_Lvl1_Folder_Name": {
+                                        "value": "@item().LVL1_FOLDER_NAME",
+                                        "type": "Expression"
+                                    },
+                                    "p_Source_Extract_Status": {
+                                        "value": "@coalesce(item().SOURCE_EXTRACT_STATUS, '')",
+                                        "type": "Expression"
+                                    },
+                                    "p_Batch_ID": {
+                                        "value": "@pipeline().parameters.p_Batch_ID",
+                                        "type": "Expression"
+                                    },
+                                    "p_Staging_Container": {
+                                        "value": "@pipeline().parameters.p_Staging_Container",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_Initial_Meta_Id": {
+                "type": "string"
+            },
+            "p_Initial_Source_Name": {
+                "type": "string"
+            },
+            "p_Source_Path": {
+                "type": "string"
+            },
+            "p_File_Prefix": {
+                "type": "string"
+            },
+            "p_Run_Id": {
+                "type": "string"
+            },
+            "p_Batch_ID": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "p_Staging_Container": {
+                "type": "string",
+                "defaultValue": "snowflake-data"
+            }
+        },
+        "variables": {
+            "vConst_Max_Files": {
+                "type": "String",
+                "defaultValue": "5000"
+            }
+        },
+        "folder": {
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime/Child"
+        },
+        "annotations": []
+    }
+}

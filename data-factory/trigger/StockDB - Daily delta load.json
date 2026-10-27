@@ -1,0 +1,38 @@
+{
+	"name": "StockDB - Daily delta load",
+	"properties": {
+		"description": "StockDB - Daily delta load",
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "E_RDBMS_Shared_SQL_Server",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "STOCKDB",
+					"p_Run_Group": "GRP:INCREMENTAL"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2025-10-07T00:00:00",
+				"endTime": "2025-10-31T23:59:59",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						5
+					],
+					"hours": [
+						4
+					]
+				}
+			}
+		}
+	}
+}

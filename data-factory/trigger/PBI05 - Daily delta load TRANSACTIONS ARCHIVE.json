@@ -1,0 +1,37 @@
+{
+	"name": "PBI05 - Daily delta load TRANSACTIONS ARCHIVE",
+	"properties": {
+		"description": "PBI05 - Daily delta load TRANSACTIONS ARCHIVE",
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "E_RDBMS_Shared_SQL_Server",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "PBI05_TRANSACTIONS_ARCHIVE",
+					"p_Run_Group": "GRP:INCREMENTAL"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2025-10-06T23:38:00",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						0
+					],
+					"hours": [
+						8
+					]
+				}
+			}
+		}
+	}
+}

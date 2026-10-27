@@ -1,0 +1,15 @@
+{
+    "publishBranch": "adf_publish",
+    "includeGlobalParamsTemplate": true,
+    "integrationRuntimesToIgnore": [
+        "shir"
+    ],
+    "linkedServicesToIgnore": [
+        "cwraseedpst",
+        "cwr-ase-edp-kv"
+    ],
+    "managedPrivateEdnpointsToIgnore": [
+        "cwr-ase-edp-kv"
+    ]
+
+}

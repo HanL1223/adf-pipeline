@@ -1,0 +1,29 @@
+{
+	"name": "cw_au_edp_snowflake_wh",
+	"properties": {
+		"annotations": [],
+		"type": "SnowflakeV2",
+		"typeProperties": {
+			"authenticationType": "KeyPair",
+			"accountIdentifier": "YK41343",
+			"user": "SVC_ADF_DEV",
+			"database": "EDP_DEV",
+			"warehouse": "DEV_DATA_LOAD_WH",
+			"role": "DEV_ACCOUNT_ROLE_DATA_INGESTION",
+			"host": "wogzdtj-au.privatelink.snowflakecomputing.com",
+			"privateKey": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": "AdfServiceAccount-private-key"
+			}
+		},
+		"version": "1.1",
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

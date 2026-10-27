@@ -1,0 +1,37 @@
+{
+	"name": "PBI05 - Retail Data",
+	"properties": {
+		"description": "This schedule refreshes 4 tables.\nDIM_PRODUCT - Full Refresh Daily\nDIM_STORE - Full Refresh Daily\nFCT_SALES - Full Refresh Daily (~11M Records)\nFCT_STOCK - Data Merged for last 28 days",
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "E_RDBMS_Shared_SQL_Server",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "MERGECO_RETAIL_GRP2",
+					"p_Run_Group": "GRP:INCREMENTAL"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2025-11-27T05:09:00",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						30
+					],
+					"hours": [
+						12
+					]
+				}
+			}
+		}
+	}
+}

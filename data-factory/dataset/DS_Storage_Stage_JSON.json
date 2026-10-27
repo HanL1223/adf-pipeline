@@ -1,0 +1,47 @@
+{
+	"name": "DS_Storage_Stage_JSON",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cwraseedpst",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"Folder": {
+				"type": "string"
+			},
+			"File": {
+				"type": "string"
+			},
+			"Container": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "03 Storage"
+		},
+		"annotations": [],
+		"type": "Json",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"fileName": {
+					"value": "@dataset().File",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@dataset().Folder",
+					"type": "Expression"
+				},
+				"container": {
+					"value": "@dataset().Container",
+					"type": "Expression"
+				}
+			},
+			"compression": {
+				"type": "gzip",
+				"level": "Fastest"
+			}
+		},
+		"schema": {}
+	}
+}

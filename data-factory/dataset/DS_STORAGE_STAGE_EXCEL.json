@@ -1,0 +1,51 @@
+{
+	"name": "DS_STORAGE_STAGE_EXCEL",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cwraseedpst",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"Folder": {
+				"type": "string"
+			},
+			"File": {
+				"type": "string"
+			},
+			"Sheet_Name": {
+				"type": "string"
+			},
+			"Container": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "05 FILE"
+		},
+		"annotations": [],
+		"type": "Excel",
+		"typeProperties": {
+			"sheetName": {
+				"value": "@dataset().Sheet_Name",
+				"type": "Expression"
+			},
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"fileName": {
+					"value": "@dataset().File",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@dataset().Folder",
+					"type": "Expression"
+				},
+				"container": {
+					"value": "@dataset().Container",
+					"type": "Expression"
+				}
+			},
+			"range": ""
+		},
+		"schema": []
+	}
+}

@@ -1,0 +1,33 @@
+{
+	"name": "DS_Snowflake_AI_Retail_Analytics_Table",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cw_au_edp_snowflake_ai_retail_analytics",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"SchemaName": {
+				"type": "String"
+			},
+			"TableName": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "08 AI_Retail_Analytics"
+		},
+		"annotations": [],
+		"type": "SnowflakeV2Table",
+		"schema": [],
+		"typeProperties": {
+			"schema": {
+				"value": "@{dataset().SchemaName}",
+				"type": "Expression"
+			},
+			"table": {
+				"value": "@{dataset().TableName}",
+				"type": "Expression"
+			}
+		}
+	}
+}

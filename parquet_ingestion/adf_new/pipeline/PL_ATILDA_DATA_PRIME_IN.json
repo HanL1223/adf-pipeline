@@ -1,0 +1,312 @@
+{
+    "name": "PL_ATILDA_DATA_PRIME_IN",
+    "properties": {
+        "description": "Data prime, part 1 (data in): extract one SQL Server table to Parquet part files in <StagingContainer>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME before anything changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME.",
+        "activities": [
+            {
+                "name": "Check landing folder",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "Folder": {
+                                "value": "@pipeline().parameters.p_Source_Path",
+                                "type": "Expression"
+                            },
+                            "Container": {
+                                "value": "@pipeline().globalParameters.StagingContainer",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "fieldList": [
+                        "exists"
+                    ],
+                    "storeSettings": {
+                        "type": "AzureBlobStorageReadSettings",
+                        "recursive": false
+                    },
+                    "formatSettings": {
+                        "type": "BinaryReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "Clear landing folder",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "Check landing folder",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@activity('Check landing folder').output.exists",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Delete old part files",
+                            "type": "Delete",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.01:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Folder": {
+                                            "value": "@pipeline().parameters.p_Source_Path",
+                                            "type": "Expression"
+                                        },
+                                        "Container": {
+                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "enableLogging": false,
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": false,
+                                    "wildcardFileName": {
+                                        "value": "@concat(pipeline().parameters.p_File_Prefix, '_part_*.parquet')",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                },
+                "description": "Removes this object's part files from earlier runs. SOURCE_PATH is unique per object (checked by Check pair)."
+            },
+            {
+                "name": "Extract batches",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Clear landing folder",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@pipeline().parameters.p_Batches",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 4,
+                    "activities": [
+                        {
+                            "name": "Extract to parquet",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "1.00:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "description": "One key-range batch to Parquet part files <prefix>_part_<RunId>_b<k>_<n>.parquet. No partitionOption, so fileNamePrefix applies. No retry: a retry would duplicate part files.",
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlServerSource",
+                                    "sqlReaderQuery": {
+                                        "value": "@{pipeline().parameters.p_Source_Query}@{item().BATCH_FILTER}",
+                                        "type": "Expression"
+                                    },
+                                    "queryTimeout": "12:00:00",
+                                    "partitionOption": "None"
+                                },
+                                "sink": {
+                                    "type": "ParquetSink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageWriteSettings"
+                                    },
+                                    "formatSettings": {
+                                        "type": "ParquetWriteSettings",
+                                        "maxRowsPerFile": {
+                                            "value": "@pipeline().parameters.p_Rows_Per_File",
+                                            "type": "Expression"
+                                        },
+                                        "fileNamePrefix": {
+                                            "value": "@{pipeline().parameters.p_File_Prefix}_part_@{pipeline().parameters.p_Run_Id}_b@{item().BATCH_NO}",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "enableStaging": true,
+                                "stagingSettings": {
+                                    "linkedServiceName": {
+                                        "referenceName": "cwraseedpst",
+                                        "type": "LinkedServiceReference"
+                                    },
+                                    "path": "snowflake-data/_adf_staging"
+                                }
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "DS_SQLServer_Shared",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "ServerName": {
+                                            "value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].ServerName",
+                                            "type": "Expression"
+                                        },
+                                        "DatabaseName": {
+                                            "value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].DatabaseName",
+                                            "type": "Expression"
+                                        },
+                                        "UserNameSecretName": {
+                                            "value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].UserNameSecretName",
+                                            "type": "Expression"
+                                        },
+                                        "PasswordSecretName": {
+                                            "value": "@pipeline().globalParameters.SourceConfig[pipeline().parameters.p_Source_Name].PasswordSecretName",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "DS_Storage_Landing_Parquet",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Folder": {
+                                            "value": "@pipeline().parameters.p_Source_Path",
+                                            "type": "Expression"
+                                        },
+                                        "File": {
+                                            "value": "@string('')",
+                                            "type": "Expression"
+                                        },
+                                        "Container": {
+                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "name": "Collect batch rows",
+                            "type": "AppendVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "Extract to parquet",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "vBatch_Rows",
+                                "value": {
+                                    "value": "@json(concat('{\"b\":\"', string(item().BATCH_NO), '\",\"rows\":', string(activity('Extract to parquet').output.rowsCopied), '}'))",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Return batch rows",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "Extract batches",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "description": "Returns [{b, rows}] per batch to PL_ATILDA_DATA_PRIME, which reconciles them against BRONZE.",
+                "typeProperties": {
+                    "variableName": "pipelineReturnValue",
+                    "setSystemVariable": true,
+                    "value": [
+                        {
+                            "key": "batch_rows",
+                            "value": {
+                                "type": "Expression",
+                                "content": "@variables('vBatch_Rows')"
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_Initial_Meta_Id": {
+                "type": "string"
+            },
+            "p_Source_Name": {
+                "type": "string"
+            },
+            "p_Source_Path": {
+                "type": "string"
+            },
+            "p_File_Prefix": {
+                "type": "string"
+            },
+            "p_Run_Id": {
+                "type": "string"
+            },
+            "p_Source_Query": {
+                "type": "string"
+            },
+            "p_Batches": {
+                "type": "array"
+            },
+            "p_Rows_Per_File": {
+                "type": "int",
+                "defaultValue": 500000
+            }
+        },
+        "variables": {
+            "vBatch_Rows": {
+                "type": "Array",
+                "defaultValue": []
+            }
+        },
+        "folder": {
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime/Child"
+        },
+        "annotations": []
+    }
+}

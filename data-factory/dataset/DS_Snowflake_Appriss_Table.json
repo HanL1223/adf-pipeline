@@ -1,0 +1,33 @@
+{
+	"name": "DS_Snowflake_Appriss_Table",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cw_au_edp_snowflake_appriss",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"SchemaName": {
+				"type": "String"
+			},
+			"TableName": {
+				"type": "String"
+			}
+		},
+		"folder": {
+			"name": "07 Appriss"
+		},
+		"annotations": [],
+		"type": "SnowflakeV2Table",
+		"schema": [],
+		"typeProperties": {
+			"schema": {
+				"value": "@{dataset().SchemaName}",
+				"type": "Expression"
+			},
+			"table": {
+				"value": "@{dataset().TableName}",
+				"type": "Expression"
+			}
+		}
+	}
+}

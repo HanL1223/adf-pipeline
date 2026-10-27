@@ -1,0 +1,37 @@
+{
+	"name": "PBI05 - Daily delta load SUPPLYCHAIN",
+	"properties": {
+		"description": "PBI05 - Daily delta load SUPPLYCHAIN",
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "E_RDBMS_Shared_SQL_Server",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "PBI05_SUPPLYCHAIN",
+					"p_Run_Group": "GRP:INCREMENTAL"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2025-10-06T23:37:00",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						0
+					],
+					"hours": [
+						8
+					]
+				}
+			}
+		}
+	}
+}

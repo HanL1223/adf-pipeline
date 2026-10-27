@@ -1,0 +1,439 @@
+{
+	"name": "PL_AI_Retail_Analytics",
+	"properties": {
+		"activities": [
+			{
+				"name": "ForEach_Table",
+				"type": "ForEach",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@pipeline().parameters.TableList",
+						"type": "Expression"
+					},
+					"isSequential": false,
+					"activities": [
+						{
+							"name": "If_Table_Enabled",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@coalesce(item().enabled, true)",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Append_RunSummary_Skipped",
+										"type": "AppendVariable",
+										"dependsOn": [],
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "RunSummary",
+											"value": {
+												"value": "@json(concat('{',\n'\"status\":\"Skipped\",',\n'\"table\":\"', item().targetSchema, '.', item().targetTable, '\",',\n'\"loadType\":\"', item().loadType, '\",',\n'\"hwm\":\"', coalesce(item().highWaterColumn, pipeline().parameters.DefaultHighWaterColumn), '\",',\n'\"runId\":\"', pipeline().RunId, '\"',\n'}'))",
+												"type": "Expression"
+											}
+										}
+									}
+								],
+								"ifTrueActivities": [
+									{
+										"name": "Copy_SQLServer_to_Snowflake",
+										"type": "Copy",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "08:00:00",
+											"retry": 2,
+											"retryIntervalInSeconds": 120
+										},
+										"userProperties": [
+											{
+												"name": "table",
+												"value": {
+													"type": "Expression",
+													"value": "@concat(item().targetSchema, '.', item().targetTable)"
+												}
+											},
+											{
+												"name": "loadType",
+												"value": {
+													"type": "Expression",
+													"value": "@item().loadType"
+												}
+											},
+											{
+												"name": "hwm",
+												"value": {
+													"type": "Expression",
+													"value": "@coalesce(item().highWaterColumn, pipeline().parameters.DefaultHighWaterColumn)"
+												}
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SqlServerSource",
+												"additionalColumns": [
+													{
+														"name": "_INGESTED_AT",
+														"value": {
+															"value": "@utcNow()",
+															"type": "Expression"
+														}
+													},
+													{
+														"name": "_PIPELINE_RUN_ID",
+														"value": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														}
+													},
+													{
+														"name": "_LOAD_DATE",
+														"value": {
+															"value": "@formatDateTime(coalesce(pipeline().parameters.LoadDate, formatDateTime(convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'), 'yyyy-MM-dd')), 'yyyy-MM-dd')",
+															"type": "Expression"
+														}
+													},
+													{
+														"name": "_SOURCE_SYSTEM",
+														"value": {
+															"value": "@concat(item().sourceSchema, '.', item().sourceTable)",
+															"type": "Expression"
+														}
+													}
+												],
+												"sqlReaderQuery": {
+													"value": "@coalesce(\n    if(\n      not(empty(item().customQuery)),\n      replace(\n        item().customQuery,\n        '{{LoadDate}}',\n        formatDateTime(\n          coalesce(\n            pipeline().parameters.LoadDate,\n            formatDateTime(\n              convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'),\n              'yyyy-MM-dd'\n            )\n          ),\n          'yyyy-MM-dd'\n        )\n      ),\n      null\n    ),\n    if(\n      equals(item().partitionOption,'DynamicRange'),\n      concat(\n        'SELECT * FROM ', item().sourceSchema, '.', item().sourceTable,\n        ' WHERE ?DfDynamicRangePartitionCondition',\n        if(\n          equals(item().loadType,'Incremental'),\n          concat(\n            ' AND ', item().highWaterColumn, ' >= ''',\n            formatDateTime(\n              coalesce(\n                pipeline().parameters.LoadDate,\n                formatDateTime(\n                  convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'),\n                  'yyyy-MM-dd'\n                )\n              ),\n              'yyyy-MM-dd'\n            ),\n            ''' AND ', item().highWaterColumn, ' < DATEADD(day,1,''',\n            formatDateTime(\n              coalesce(\n                pipeline().parameters.LoadDate,\n                formatDateTime(\n                  convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'),\n                  'yyyy-MM-dd'\n                )\n              ),\n              'yyyy-MM-dd'\n            ),\n            ''')'\n          ),\n          ''\n        )\n      ),\n      if(\n        equals(item().loadType,'Incremental'),\n        concat(\n          'SELECT * FROM ', item().sourceSchema, '.', item().sourceTable,\n          ' WHERE ', item().highWaterColumn, ' >= ''',\n          formatDateTime(\n            coalesce(\n              pipeline().parameters.LoadDate,\n              formatDateTime(\n                convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'),\n                'yyyy-MM-dd'\n              )\n            ),\n            'yyyy-MM-dd'\n          ),\n          ''' AND ', item().highWaterColumn, ' < DATEADD(day,1,''',\n          formatDateTime(\n            coalesce(\n              pipeline().parameters.LoadDate,\n              formatDateTime(\n                convertTimeZone(utcNow(),'UTC','AUS Eastern Standard Time'),\n                'yyyy-MM-dd'\n              )\n            ),\n            'yyyy-MM-dd'\n          ),\n          ''')'\n        ),\n        concat('SELECT * FROM ', item().sourceSchema, '.', item().sourceTable)\n      )\n    )\n  )",
+													"type": "Expression"
+												},
+												"partitionOption": {
+													"value": "@coalesce(item().partitionOption, 'None')",
+													"type": "Expression"
+												},
+												"partitionSettings": {
+													"partitionColumnName": {
+														"value": "@{item().partitionColumn}",
+														"type": "Expression"
+													},
+													"partitionUpperBound": {
+														"value": "@{coalesce(item().partitionUpperBound, 0)}",
+														"type": "Expression"
+													},
+													"partitionLowerBound": {
+														"value": "@{coalesce(item().partitionLowerBound, 0)}",
+														"type": "Expression"
+													}
+												}
+											},
+											"sink": {
+												"type": "SnowflakeV2Sink",
+												"preCopyScript": {
+													"value": "@{concat(\n    'BEGIN ',\n      'ALTER SESSION SET QUERY_TAG = ''ADF:', pipeline().RunId, ':', item().targetSchema, '.', item().targetTable, ''';',\n      if(\n        equals(toLower(coalesce(item().rawWriteMode, 'Append')), 'fullreplace'),\n        concat('TRUNCATE TABLE ', item().targetSchema, '.', item().targetTable, ';'),\n        ''\n      ),\n    'END;'\n  )}",
+													"type": "Expression"
+												},
+												"importSettings": {
+													"type": "SnowflakeImportCopyCommand",
+													"additionalCopyOptions": {
+														"ON_ERROR": "CONTINUE"
+													},
+													"storageIntegration": {
+														"value": "@pipeline().globalParameters.SnowflakeStorageIntegration",
+														"type": "Expression"
+													}
+												}
+											},
+											"enableStaging": true,
+											"stagingSettings": {
+												"linkedServiceName": {
+													"referenceName": "cwr_au_edp_az_ir_st",
+													"type": "LinkedServiceReference"
+												},
+												"path": {
+													"value": "@concat(pipeline().globalParameters.StagingContainer, '/', pipeline().parameters.StagingFolderPrefix, '/', item().targetSchema, '/', item().targetTable, '/', formatDateTime(utcNow(),'yyyy-MM-ddTHH-mm-ss'))",
+													"type": "Expression"
+												}
+											},
+											"parallelCopies": {
+												"value": "@coalesce(item().parallelCopies, 4)",
+												"type": "Expression"
+											}
+										},
+										"inputs": [
+											{
+												"referenceName": "DS_SQLServer_Shared",
+												"type": "DatasetReference",
+												"parameters": {
+													"ServerName": {
+														"value": "@pipeline().globalParameters.SourceConfig.PBI05_TRANSACTIONS_ARCHIVE.ServerName",
+														"type": "Expression"
+													},
+													"DatabaseName": {
+														"value": "@pipeline().globalParameters.SourceConfig.PBI05_TRANSACTIONS_ARCHIVE.DatabaseName",
+														"type": "Expression"
+													},
+													"UserNameSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig.PBI05_TRANSACTIONS_ARCHIVE.UserNameSecretName",
+														"type": "Expression"
+													},
+													"PasswordSecretName": {
+														"value": "@pipeline().globalParameters.SourceConfig.PBI05_TRANSACTIONS_ARCHIVE.PasswordSecretName",
+														"type": "Expression"
+													}
+												}
+											}
+										],
+										"outputs": [
+											{
+												"referenceName": "DS_Snowflake_AI_Retail_Analytics_Table",
+												"type": "DatasetReference",
+												"parameters": {
+													"SchemaName": "@item().targetSchema",
+													"TableName": "@item().targetTable"
+												}
+											}
+										]
+									},
+									{
+										"name": "Append_RunSummary_Success",
+										"type": "AppendVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy_SQLServer_to_Snowflake",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "RunSummary",
+											"value": {
+												"value": "@json(concat('{',\n'\"status\":\"Succeeded\",',\n'\"table\":\"', item().targetSchema, '.', item().targetTable, '\",',\n'\"loadType\":\"', item().loadType, '\",',\n'\"hwm\":\"', coalesce(item().highWaterColumn, pipeline().parameters.DefaultHighWaterColumn), '\",',\n'\"rowsRead\":', string(activity('Copy_SQLServer_to_Snowflake').output.rowsRead), ',',\n'\"rowsCopied\":', string(activity('Copy_SQLServer_to_Snowflake').output.rowsCopied), ',',\n'\"dataRead\":', string(activity('Copy_SQLServer_to_Snowflake').output.dataRead), ',',\n'\"dataWritten\":', string(activity('Copy_SQLServer_to_Snowflake').output.dataWritten), ',',\n'\"copyDuration\":', string(activity('Copy_SQLServer_to_Snowflake').output.copyDuration), ',',\n'\"throughput\":', string(activity('Copy_SQLServer_to_Snowflake').output.throughput), ',',\n'\"usedParallelCopies\":', string(activity('Copy_SQLServer_to_Snowflake').output.usedParallelCopies), ',',\n'\"effectiveIntegrationRuntime\":\"', string(activity('Copy_SQLServer_to_Snowflake').output.effectiveIntegrationRuntime), '\",',\n'\"runId\":\"', pipeline().RunId, '\"',\n'}'))\n",
+												"type": "Expression"
+											}
+										}
+									},
+									{
+										"name": "Append_RunSummary_Failure",
+										"type": "AppendVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy_SQLServer_to_Snowflake",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "RunSummary",
+											"value": {
+												"value": "@json(concat('{',\n'\"status\":\"Failed\",',\n'\"table\":\"', item().targetSchema, '.', item().targetTable, '\",',\n'\"loadType\":\"', item().loadType, '\",',\n'\"hwm\":\"', coalesce(item().highWaterColumn, pipeline().parameters.DefaultHighWaterColumn), '\",',\n'\"runId\":\"', pipeline().RunId, '\",',\n'\"errorCode\":\"', string(activity('Copy_SQLServer_to_Snowflake').error.errorCode), '\",',\n'\"failureType\":\"', string(activity('Copy_SQLServer_to_Snowflake').error.failureType), '\",',\n'\"target\":\"', string(activity('Copy_SQLServer_to_Snowflake').error.target), '\",',\n'\"errorMessage\":\"', replace(string(activity('Copy_SQLServer_to_Snowflake').error.message), '\"','\\\"'), '\"',\n'}'))\n",
+												"type": "Expression"
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"LoadDate": {
+				"type": "String",
+				"defaultValue": null
+			},
+			"DefaultHighWaterColumn": {
+				"type": "String",
+				"defaultValue": "LastModifiedDateUtc"
+			},
+			"StagingFolderPrefix": {
+				"type": "String",
+				"defaultValue": "ai_retail_analytics/staging"
+			},
+			"TableList": {
+				"type": "Array",
+				"defaultValue": [
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "TRANSACTIONS",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTIONS",
+						"loadType": "Incremental",
+						"highWaterColumn": "inTimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "TransactionID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT TransactionID AS TRANSACTIONID, TransactionType AS TRANSACTIONTYPE, InvoiceID AS INVOICEID, OriginBranchID AS ORIGINBRANCHID, OriginTransactionID AS ORIGINTRANSACTIONID, MyChemID AS MYCHEMID, QtyRequested AS QTYREQUESTED, QtySupplied AS QTYSUPPLIED, BaseUnitPriceEx AS BASEUNITPRICEEX, UnitPriceEx AS UNITPRICEEX, UnitGSTAmount AS UNITGSTAMOUNT, Total AS TOTAL, UnlistedDescription AS UNLISTEDDESCRIPTION, UnitCostEx AS UNITCOSTEX, GovRecovery AS GOVRECOVERY, UnitLIFOCostEx AS UNITLIFOCOSTEX, SentToAllTrans AS SENTTOALLTRANS, GeneralReferenceID AS GENERALREFERENCEID, CatalogID AS CATALOGID, SaleRowNumber AS SALEROWNUMBER, MultiBuyID AS MULTIBUYID, MultiBuyTriggerID AS MULTIBUYTRIGGERID, MultiBuyCount AS MULTIBUYCOUNT, ForPatientID AS FORPATIENTID, ScriptNumber AS SCRIPTNUMBER, SupplierID AS SUPPLIERID, inInvoiceType AS ININVOICETYPE, inStaffID AS INSTAFFID, inTimeStamp AS INTIMESTAMP, inTimeStamp_StartSale AS INTIMESTAMP_STARTSALE, inDescription AS INDESCRIPTION, CAST(NULL AS BIGINT) AS INSTOREDBTORID, CAST(NULL AS BIGINT) AS INMASTERDBTORID, inStoreStatementID AS INSTORESTATEMENTID, inStoreEndOfDayID AS INSTOREENDOFDAYID, inStoreMachineName AS INSTOREMACHINENAME, inForStaffID AS INFORSTAFFID, inForClubCard AS INFORCLUBCARD, inElectronicType AS INELECTRONICTYPE, inElectronicRef AS INELECTRONICREF, inMeta AS INMETA, Barcode AS BARCODE, CAST(NULL AS FLOAT) AS UNITSSOLDINVOICE, BasePatientPrice AS BASEPATIENTPRICE, DispensedDate AS DISPENSEDDATE, DispensedStaffID AS DISPENSEDSTAFFID, NetworkAvgCostPrice AS NETWORKAVGCOSTPRICE, TradeAgreementCWMProduct AS TRADEAGREEMENTCWMPRODUCT, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.Transactions WITH (NOLOCK) WHERE inTimeStamp >= DATEADD(day, -2, '{{LoadDate}}') AND inTimeStamp < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "Transactions_Online",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTIONS_ONLINE",
+						"loadType": "Incremental",
+						"highWaterColumn": "TimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "ID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT ID AS ID, OrderID AS ORDERID, InvoiceID AS INVOICEID, CustomerID AS CUSTOMERID, MychemID AS MYCHEMID, QtySupplied AS QTYSUPPLIED, BaseUnitPriceEx AS BASEUNITPRICEEX, UnitPriceEx AS UNITPRICEEX, UnitGSTAmount AS UNITGSTAMOUNT, Total AS TOTAL, [TimeStamp] AS [TIMESTAMP], OriginBranchID AS ORIGINBRANCHID, LineNumber AS LINENUMBER, WebItemID AS WEBITEMID, UnitCostExTypical AS UNITCOSTEXTYPICAL, GovRecoveryTypical AS GOVRECOVERYTYPICAL, UnitsSoldInInvoice AS UNITSSOLDININVOICE, Cancelled AS CANCELLED, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.Transactions_Online WITH (NOLOCK) WHERE [TimeStamp] >= DATEADD(day, -2, '{{LoadDate}}') AND [TimeStamp] < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "TransactionReturns",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTION_RETURNS",
+						"loadType": "Incremental",
+						"highWaterColumn": "TimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "TransactionID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT TransactionID AS TRANSACTIONID, InvoiceID AS INVOICEID, [TimeStamp] AS [TIMESTAMP], OriginBranchID AS ORIGINBRANCHID, MychemID AS MYCHEMID, QtySupplied AS QTYSUPPLIED, Total AS TOTAL, UnitCostEx AS UNITCOSTEX, GeneralReferenceID AS GENERALREFERENCEID, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.TransactionReturns WITH (NOLOCK) WHERE [TimeStamp] >= DATEADD(day, -2, '{{LoadDate}}') AND [TimeStamp] < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "Transactions_OnlineReturns",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTIONS_ONLINE_RETURNS",
+						"loadType": "Incremental",
+						"highWaterColumn": "TimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "ID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT ID AS ID, OrderID AS ORDERID, InvoiceID AS INVOICEID, CustomerID AS CUSTOMERID, MychemID AS MYCHEMID, QtySupplied AS QTYSUPPLIED, BaseUnitPriceEx AS BASEUNITPRICEEX, UnitPriceEx AS UNITPRICEEX, UnitGSTAmount AS UNITGSTAMOUNT, Total AS TOTAL, [TimeStamp] AS [TIMESTAMP], OriginBranchID AS ORIGINBRANCHID, LineNumber AS LINENUMBER, WebItemID AS WEBITEMID, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.Transactions_OnlineReturns WITH (NOLOCK) WHERE [TimeStamp] >= DATEADD(day, -2, '{{LoadDate}}') AND [TimeStamp] < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "Transactions_Deleted",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTIONS_DELETED",
+						"loadType": "Incremental",
+						"highWaterColumn": "inTimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "TransactionID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT TransactionID AS TRANSACTIONID, TransactionType AS TRANSACTIONTYPE, InvoiceID AS INVOICEID, OriginBranchID AS ORIGINBRANCHID, OriginTransactionID AS ORIGINTRANSACTIONID, MychemID AS MYCHEMID, QtyRequested AS QTYREQUESTED, QtySupplied AS QTYSUPPLIED, BaseUnitPriceEx AS BASEUNITPRICEEX, UnitPriceEx AS UNITPRICEEX, UnitGSTAmount AS UNITGSTAMOUNT, Total AS TOTAL, UnlistedDescription AS UNLISTEDDESCRIPTION, UnitCostEx AS UNITCOSTEX, GovRecovery AS GOVRECOVERY, UnitLIFOCostEx AS UNITLIFOCOSTEX, SentToAllTrans AS SENTTOALLTRANS, GeneralReferenceID AS GENERALREFERENCEID, CatalogID AS CATALOGID, SaleRowNumber AS SALEROWNUMBER, MultiBuyID AS MULTIBUYID, MultiBuyTriggerID AS MULTIBUYTRIGGERID, MultiBuyCount AS MULTIBUYCOUNT, ForPatientID AS FORPATIENTID, ScriptNumber AS SCRIPTNUMBER, SupplierID AS SUPPLIERID, inInvoiceType AS ININVOICETYPE, inStaffID AS INSTAFFID, inTimeStamp AS INTIMESTAMP, inTimeStamp_StartSale AS INTIMESTAMP_STARTSALE, inDescription AS INDESCRIPTION, inStoreDebtorID AS INSTOREDEBTORID, inMasterDebtorID AS INMASTERDEBTORID, inStoreStatementID AS INSTORESTATEMENTID, inStoreEndOfDayID AS INSTOREENDOFDAYID, inStoreMachineName AS INSTOREMACHINENAME, inForStaffID AS INFORSTAFFID, inForClubCard AS INFORCLUBCARD, inElectronicType AS INELECTRONICTYPE, inElectronicRef AS INELECTRONICREF, inMeta AS INMETA, Barcode AS BARCODE, UnitsSoldInInvoice AS UNITSSOLDININVOICE, BasePatientPrice AS BASEPATIENTPRICE, DispensedDate AS DISPENSEDDATE, DispensedStaffID AS DISPENSEDSTAFFID, NetworkAvgCostPrice AS NETWORKAVGCOSTPRICE, TradeAgreementCWMProduct AS TRADEAGREEMENTCWMPRODUCT, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.Transactions_Deleted WITH (NOLOCK) WHERE inTimeStamp >= DATEADD(day, -2, '{{LoadDate}}') AND inTimeStamp < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "Transactions_Deleted",
+						"targetSchema": "RAW",
+						"targetTable": "TRANSACTIONS_DELETED",
+						"loadType": "Incremental",
+						"highWaterColumn": "inTimeStamp",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "TransactionID",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT TransactionID AS TRANSACTIONID, TransactionType AS TRANSACTIONTYPE, InvoiceID AS INVOICEID, OriginBranchID AS ORIGINBRANCHID, OriginTransactionID AS ORIGINTRANSACTIONID, MychemID AS MYCHEMID, QtyRequested AS QTYREQUESTED, QtySupplied AS QTYSUPPLIED, BaseUnitPriceEx AS BASEUNITPRICEEX, UnitPriceEx AS UNITPRICEEX, UnitGSTAmount AS UNITGSTAMOUNT, Total AS TOTAL, UnlistedDescription AS UNLISTEDDESCRIPTION, UnitCostEx AS UNITCOSTEX, GovRecovery AS GOVRECOVERY, UnitLIFOCostEx AS UNITLIFOCOSTEX, SentToAllTrans AS SENTTOALLTRANS, GeneralReferenceID AS GENERALREFERENCEID, CatalogID AS CATALOGID, SaleRowNumber AS SALEROWNUMBER, MultiBuyID AS MULTIBUYID, MultiBuyTriggerID AS MULTIBUYTRIGGERID, MultiBuyCount AS MULTIBUYCOUNT, ForPatientID AS FORPATIENTID, ScriptNumber AS SCRIPTNUMBER, SupplierID AS SUPPLIERID, inInvoiceType AS ININVOICETYPE, inStaffID AS INSTAFFID, inTimeStamp AS INTIMESTAMP, inTimeStamp_StartSale AS INTIMESTAMP_STARTSALE, inDescription AS INDESCRIPTION, inStoreDebtorID AS INSTOREDEBTORID, inMasterDebtorID AS INMASTERDEBTORID, inStoreStatementID AS INSTORESTATEMENTID, inStoreEndOfDayID AS INSTOREENDOFDAYID, inStoreMachineName AS INSTOREMACHINENAME, inForStaffID AS INFORSTAFFID, inForClubCard AS INFORCLUBCARD, inElectronicType AS INELECTRONICTYPE, inElectronicRef AS INELECTRONICREF, inMeta AS INMETA, Barcode AS BARCODE, UnitsSoldInInvoice AS UNITSSOLDININVOICE, BasePatientPrice AS BASEPATIENTPRICE, DispensedDate AS DISPENSEDDATE, DispensedStaffID AS DISPENSEDSTAFFID, NetworkAvgCostPrice AS NETWORKAVGCOSTPRICE, TradeAgreementCWMProduct AS TRADEAGREEMENTCWMPRODUCT, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.Transactions_Deleted WITH (NOLOCK) WHERE inTimeStamp >= DATEADD(day, -2, '{{LoadDate}}') AND inTimeStamp < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "FCT_SALES",
+						"targetSchema": "RAW",
+						"targetTable": "FCT_SALES",
+						"loadType": "Incremental",
+						"highWaterColumn": "DATE_FK",
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "SALES_SK",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT SALES_SK AS SALES_SK, PRODUCT_FK AS PRODUCT_FK, PRODUCT_GROUP_FK AS PRODUCT_GROUP_FK, LFL_FK AS LFL_FK, MULTIBUY_FK AS MULTIBUY_FK, MULTIBUYTRIGGER_FK AS MULTIBUYTRIGGER_FK, STORE_FK AS STORE_FK, STORE_GROUP_FK AS STORE_GROUP_FK, CATALOGUE_FK AS CATALOGUE_FK, DATE_FK AS DATE_FK, SALES_VALUE_INCL_GOV_RECOVERY AS SALES_VALUE_INCL_GOV_RECOVERY, GP_DOLLARS_AVG_REAL AS GP_DOLLARS_AVG_REAL, SALES_FOR_GP_CALCULATION AS SALES_FOR_GP_CALCULATION, UNIT_SALES AS UNIT_SALES, SALES_VALUE AS SALES_VALUE, COST_OF_SALE AS COST_OF_SALE, GovRecovery AS GOVRECOVERY, staffOwnPurchase AS STAFFOWNPURCHASE, Refund AS REFUND, Refund_with_Receipt AS REFUND_WITH_RECEIPT, Refund_without_Receipt AS REFUND_WITHOUT_RECEIPT, Number_of_Refunds AS NUMBER_OF_REFUNDS, Scripts_Count AS SCRIPTS_COUNT, GST_Amount AS GST_AMOUNT, Discount AS DISCOUNT, [Item Discount Customer] AS ITEM_DISCOUNT_CUSTOMER, [Script Discount Customer] AS SCRIPT_DISCOUNT_CUSTOMER, [Item Discount Staff] AS ITEM_DISCOUNT_STAFF, [Script Discount Staff] AS SCRIPT_DISCOUNT_STAFF, [COGS Network Avg] AS COGS_NETWORK_AVG, [GP Dollars Network Avg] AS GP_DOLLARS_NETWORK_AVG, Refund_Qty AS REFUND_QTY, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.FCT_SALES WITH (NOLOCK) WHERE DATE_FK >= DATEADD(day, -7, '{{LoadDate}}') AND DATE_FK < DATEADD(day, -1, '{{LoadDate}}') AND ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Append"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "DIM_PRODUCT",
+						"targetSchema": "RAW",
+						"targetTable": "DIM_PRODUCT",
+						"loadType": "Full",
+						"highWaterColumn": null,
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "PRODUCT_SK",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT PRODUCT_SK AS PRODUCT_SK, MYCHEM_ID AS MYCHEM_ID, BUYER AS BUYER, PRODUCT_CATEGORY_ID AS PRODUCT_CATEGORY_ID, CATEGORY AS CATEGORY, GROUP_ID AS GROUP_ID, [GROUP] AS PRODUCT_GROUP, PRODUCT_DESC AS PRODUCT_DESC, BRAND_DRUG_NAME AS BRAND_DRUG_NAME, BRAND_PACK_NAME AS BRAND_PACK_NAME, DESCRIPTION_WITH_MYCHEM_ID AS DESCRIPTION_WITH_MYCHEM_ID, GENERIC_DRUG_NAME AS GENERIC_DRUG_NAME, GENERIC_PACK_NAME AS GENERIC_PACK_NAME, IS_ORIGINATOR AS IS_ORIGINATOR, MAIN_SUPPLIER AS MAIN_SUPPLIER, PLU AS PLU, PRODUCT_CATEGORY_MAX AS PRODUCT_CATEGORY_MAX, PRODUCT_CATEGORY_MIN AS PRODUCT_CATEGORY_MIN, PRODUCT_GROUP_MAX AS PRODUCT_GROUP_MAX, PRODUCT_GROUP_MIN AS PRODUCT_GROUP_MIN, X_Product AS X_PRODUCT, Inactive AS INACTIVE, Brand AS BRAND, PREF_SUPPLIER AS PREF_SUPPLIER, Generic AS GENERIC, Schedule AS SCHEDULE, ServiceItem AS SERVICEITEM, NDSS AS NDSS, PrePack AS PREPACK, FranchiseProduct AS FRANCHISEPRODUCT, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.DIM_PRODUCT WITH (NOLOCK) WHERE ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Overwrite"
+					},
+					{
+						"enabled": true,
+						"sourceSchema": "dbo",
+						"sourceTable": "DIM_STORE",
+						"targetSchema": "RAW",
+						"targetTable": "DIM_STORE",
+						"loadType": "Full",
+						"highWaterColumn": null,
+						"partitionOption": "DynamicRange",
+						"partitionColumn": "STORE_SK",
+						"partitionLowerBound": null,
+						"partitionUpperBound": null,
+						"partitionCount": 4,
+						"parallelCopies": 2,
+						"additionalCopyOptions": null,
+						"customQuery": "SELECT STORE_SK AS STORE_SK, BRANCH_ID AS BRANCH_ID, B_BRANCH_ID AS B_BRANCH_ID, STORE_GROUP_ID AS STORE_GROUP_ID, STORE_NAME AS STORE_NAME, STORE_TYPE AS STORE_TYPE, STORE_ACCOUNT_NUMBER_WITH_NAME AS STORE_ACCOUNT_NUMBER_WITH_NAME, ACCOUNTS_STORE_NUMBER AS ACCOUNTS_STORE_NUMBER, AX_CUST_ACCOUNT AS AX_CUST_ACCOUNT, OPENING_DATE AS OPENING_DATE, SHOP_FRONT_TYPE AS SHOP_FRONT_TYPE, STATE AS STATE, STATE_MANAGER_AREA AS STATE_MANAGER_AREA, POSTCODE AS POSTCODE, SALES_CHANNEL AS SALES_CHANNEL, SALES_CHANNEL_ID AS SALES_CHANNEL_ID, PropertyStoreNo AS PROPERTY_STORE_NO, Address AS ADDRESS, Suburb AS SUBURB, Latitude AS LATITUDE, Longitude AS LONGITUDE, ABN AS ABN, Prop AS PROP, Projen_Store_Front_Type AS PROJEN_STORE_FRONT_TYPE, GETDATE() AS UPDATED_DATE_TIME FROM TransactionsArchive.dbo.DIM_STORE WITH (NOLOCK) WHERE ?DfDynamicRangePartitionCondition;",
+						"rawWriteMode": "Overwrite"
+					}
+				]
+			}
+		},
+		"variables": {
+			"RunSummary": {
+				"type": "Array"
+			}
+		},
+		"folder": {
+			"name": "AI_Retail_Analytics"
+		},
+		"annotations": [
+			"Multi-table SQL Server (on-prem) to Snowflake RAW ingestion for dbt with per-table Append or FullReplace loading"
+		]
+	}
+}

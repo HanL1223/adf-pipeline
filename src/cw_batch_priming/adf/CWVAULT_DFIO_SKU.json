@@ -1,0 +1,184 @@
+{
+    "name": "CWVAULT_DFIO_SKU",
+    "properties": {
+        "activities": [
+            {
+                "name": "Set File Name with File Date",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "Get Date File last Modified",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "FileName",
+                    "value": {
+                        "value": "@concat(\n    'DFIO_SKU_',\n    formatDateTime(activity('Get Date File last Modified').output.lastModified,'yyyyMMdd'),\n    '.csv'\n    )",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Get Date File last Modified",
+                "type": "GetMetadata",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "DS_CWVault_DFIO_SKU_CSV_Input",
+                        "type": "DatasetReference"
+                    },
+                    "fieldList": [
+                        "lastModified"
+                    ],
+                    "storeSettings": {
+                        "type": "FileServerReadSettings",
+                        "recursive": true,
+                        "enablePartitionDiscovery": false
+                    },
+                    "formatSettings": {
+                        "type": "DelimitedTextReadSettings"
+                    }
+                }
+            },
+            {
+                "name": "Copy data to blob",
+                "type": "Copy",
+                "dependsOn": [
+                    {
+                        "activity": "Set File Name with File Date",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "DelimitedTextSource",
+                        "storeSettings": {
+                            "type": "FileServerReadSettings",
+                            "recursive": false,
+                            "enablePartitionDiscovery": false
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextReadSettings"
+                        }
+                    },
+                    "sink": {
+                        "type": "DelimitedTextSink",
+                        "storeSettings": {
+                            "type": "AzureBlobStorageWriteSettings"
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextWriteSettings",
+                            "quoteAllText": true,
+                            "fileExtension": ".txt"
+                        }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                        "type": "TabularTranslator",
+                        "typeConversion": true,
+                        "typeConversionSettings": {
+                            "allowDataTruncation": true,
+                            "treatBooleanAsNumber": false
+                        }
+                    }
+                },
+                "inputs": [
+                    {
+                        "referenceName": "DS_CWVault_DFIO_SKU_CSV_Input",
+                        "type": "DatasetReference"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "DS_CWVault_DFIO_SKU_CSV_Output",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "FileName": {
+                                "value": "@variables('FileName')",
+                                "type": "Expression"
+                            },
+                            "Container": {
+                                "value": "@pipeline().globalParameters.StagingContainer",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ]
+            },
+            {
+                "name": "Run Snowflake Stored Proc",
+                "description": "Snowflake stored proc to ingest data to table after loading to blob storage",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "Copy data to blob",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SnowflakeV2Source",
+                        "query": {
+                            "value": "@concat(\n    'CALL MERGECO.CSV_LOAD_DFIO_SKU(''',\n    variables('FileName'),\n    ''');'\n    )",
+                            "type": "Expression"
+                        },
+                        "exportSettings": {
+                            "type": "SnowflakeExportCopyCommand"
+                        },
+                        "treatDecimalAsString": true
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Snowflake",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": true
+                }
+            }
+        ],
+        "variables": {
+            "FileName": {
+                "type": "String"
+            }
+        },
+        "folder": {
+            "name": "DATA IN/MergeCo/NETWORK_DRIVE"
+        },
+        "annotations": []
+    }
+}

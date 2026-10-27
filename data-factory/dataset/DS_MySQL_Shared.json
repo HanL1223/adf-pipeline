@@ -1,0 +1,55 @@
+{
+	"name": "DS_MySQL_Shared",
+	"properties": {
+		"description": "Generic MYSQL dataset for shared use across multiple pipelines. Dynamically parameterized for MYSQL server, database, and Key Vault-based authentication.",
+		"linkedServiceName": {
+			"referenceName": "LS_MYSQL_Shared",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"ServerName": {
+					"value": "@dataset().ServerName",
+					"type": "Expression"
+				},
+				"Port": {
+					"value": "@dataset().Port",
+					"type": "Expression"
+				},
+				"DatabaseName": {
+					"value": "@dataset().DatabaseName",
+					"type": "Expression"
+				},
+				"UserNameSecretName": {
+					"value": "@dataset().UserNameSecretName",
+					"type": "Expression"
+				},
+				"PasswordSecretName": {
+					"value": "@dataset().PasswordSecretName",
+					"type": "Expression"
+				}
+			}
+		},
+		"parameters": {
+			"ServerName": {
+				"type": "string"
+			},
+			"Port": {
+				"type": "string"
+			},
+			"DatabaseName": {
+				"type": "string"
+			},
+			"UserNameSecretName": {
+				"type": "string"
+			},
+			"PasswordSecretName": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "05 MySQL"
+		},
+		"annotations": [],
+		"type": "MySqlTable",
+		"schema": []
+	}
+}

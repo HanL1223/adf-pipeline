@@ -1,0 +1,10 @@
+{
+	"name": "cwr-ase-edp-kv",
+	"properties": {
+		"privateLinkResourceId": "/subscriptions/0340d17f-e6c0-4c02-a1c9-3082e155b6f6/resourceGroups/cwr-ae-security-rg/providers/Microsoft.KeyVault/vaults/cwr-ae-dev-data-kv",
+		"groupId": "vault",
+		"fqdns": [
+			"cwr-ae-dev-data-kv.vault.azure.net"
+		]
+	}
+}

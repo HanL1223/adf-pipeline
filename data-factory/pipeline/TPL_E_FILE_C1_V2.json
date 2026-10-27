@@ -1,0 +1,870 @@
+{
+	"name": "TPL_E_FILE_C1_V2",
+	"properties": {
+		"description": "CSV stage, can only run files sequentially. Using SNOWFLAKE V2 connector.",
+		"activities": [
+			{
+				"name": "Loop through source objects",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get run plan",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [
+					{
+						"name": "Items",
+						"value": "@activity('Get run plan').output.value"
+					}
+				],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Get run plan').output.value",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "Check if blobcopy is COMPLETE",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@concat(item().OBJECT_NAME)"
+								},
+								{
+									"name": "IFCONDITION_EXPRESSION",
+									"value": "@equals(item().BLOB_COPY_STATUS,variables('vConst_Complete'))"
+								}
+							],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().SOURCE_EXTRACT_STATUS,variables('vConst_Complete'))",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Copy to BLOB",
+										"type": "Copy",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "DelimitedTextSource",
+												"storeSettings": {
+													"type": "AzureBlobStorageReadSettings",
+													"recursive": true,
+													"enablePartitionDiscovery": false
+												},
+												"formatSettings": {
+													"type": "DelimitedTextReadSettings"
+												}
+											},
+											"sink": {
+												"type": "DelimitedTextSink",
+												"storeSettings": {
+													"type": "AzureBlobStorageWriteSettings"
+												},
+												"formatSettings": {
+													"type": "DelimitedTextWriteSettings",
+													"quoteAllText": true,
+													"fileExtension": ".txt"
+												}
+											},
+											"enableStaging": false
+										},
+										"inputs": [
+											{
+												"referenceName": "DS_STORAGE_STAGE_CSV",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": "wsdsdsd",
+													"File": "dssdsd",
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											}
+										],
+										"outputs": [
+											{
+												"referenceName": "DS_STORAGE_STAGE_CSV",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": {
+														"value": "@{item().LVL1_FOLDER_NAME}",
+														"type": "Expression"
+													},
+													"File": {
+														"value": "@{item().FILE_NAME}",
+														"type": "Expression"
+													},
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"name": "Complete BLOB copy",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Update source rows read",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''',''Successful'');')\n",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Fail BLOB copy",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Set vCopy_Error",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Fail'),''',$$',variables('vCopy_Error'),'$$);')\n",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Set vRows_Read",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy to BLOB",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "vRows_Read",
+											"value": {
+												"value": "@string(activity('Copy to BLOB').output.rowsRead)\n",
+												"type": "Expression"
+											}
+										}
+									},
+									{
+										"name": "Update source rows read",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Set vRows_Read",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_Rows_Read'),''',''',variables('vRows_Read'),''',''Successful'');')\n",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Set vCopy_Error",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "Copy to BLOB",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "vCopy_Error",
+											"value": {
+												"value": "@string(activity('Copy to BLOB').output.errors)",
+												"type": "Expression"
+											}
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "Provision SI artifacts and load data",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Check if blobcopy is COMPLETE",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME "
+								},
+								{
+									"name": "CALL _COMMAND",
+									"value": "@concat('CALL CONTROL.PR_CREATE_SI_ARTIFACTS (',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_CREATE_EXTRACT_ARTIFACTS (',item().EXTRACT_META_ID,',',item().EXTRACT_RUN_PLAN_ID,')')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Complete ETL run",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Provision SI artifacts and load data",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "OBJECT_NAME",
+									"value": "@item().OBJECT_NAME  "
+								},
+								{
+									"name": "CALL_COMMAND",
+									"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_Run_Status'),''',''',variables('vConst_Complete'),''',''Successful'');')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "Check if source archive is COMPLETE",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Check if blobcopy is COMPLETE",
+									"dependencyConditions": [
+										"Skipped"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().SOURCE_ARCHIVE_STATUS,variables('vConst_Complete'))",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Archive source file_copy",
+										"type": "Copy",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "file_name",
+												"value": "@concat(item().SOURCE_NAME,'/',item().LVL2_FOLDER_NAME,'/',item().OBJECT_NAME)"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "BinarySource",
+												"storeSettings": {
+													"type": "AzureBlobStorageReadSettings",
+													"recursive": true
+												},
+												"formatSettings": {
+													"type": "BinaryReadSettings"
+												}
+											},
+											"sink": {
+												"type": "BinarySink",
+												"storeSettings": {
+													"type": "AzureBlobStorageWriteSettings"
+												}
+											},
+											"enableStaging": false
+										},
+										"inputs": [
+											{
+												"referenceName": "DS_STORAGE_V2_STAGE_BIN",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": "sdsds",
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											}
+										],
+										"outputs": [
+											{
+												"referenceName": "DS_STORAGE_V2_STAGE_BIN",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": "dsdsdsd",
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"name": "Complete Source Archive",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Archive source file_copy",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_SourceArchive_Status'),''',''',variables('vConst_Complete'),''',''Successful'');')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									},
+									{
+										"name": "Fail Source archive",
+										"type": "Lookup",
+										"dependsOn": [
+											{
+												"activity": "Archive source file_copy",
+												"dependencyConditions": [
+													"Failed"
+												]
+											}
+										],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [
+											{
+												"name": "OBJECT_NAME",
+												"value": "@item().OBJECT_NAME  "
+											},
+											{
+												"name": "CALL_COMMAND",
+												"value": "@concat('CALL CONTROL.PR_LOG_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_BlobCopy_Status'),''',''',variables('vConst_Complete'),''')' )"
+											}
+										],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN (',item().EXTRACT_RUN_PLAN_ID,',''', variables('vConst_SourceArchive_Status'),''',''',variables('vConst_Fail'),''',''','''FAILED :',pipeline().Pipeline,' - Source archaive failed''',''')' )",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "Check delete file",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Check if source archive is COMPLETE",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@bool(item().REMOVE_SOURCE_FILE_FLAG)",
+									"type": "Expression"
+								},
+								"ifTrueActivities": [
+									{
+										"name": "Delete Source File",
+										"type": "Delete",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"dataset": {
+												"referenceName": "DS_STORAGE_V2_STAGE_BIN",
+												"type": "DatasetReference",
+												"parameters": {
+													"Folder": "dsdsdsd",
+													"Container": {
+														"value": "@pipeline().globalParameters.StagingContainer",
+														"type": "Expression"
+													}
+												}
+											},
+											"enableLogging": false,
+											"storeSettings": {
+												"type": "AzureBlobStorageReadSettings",
+												"recursive": true,
+												"wildcardFileName": {
+													"value": "@{item().OBJECT_NAME}",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Get run plan",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Loop through folders",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [
+					{
+						"name": "CALL_COMMAND",
+						"value": "@concat('SELECT  * FROM  CONTROL.ETL_RUN_PLAN_VW WHERE SOURCE_NAME =''',variables('vSource_Name'),'''')"
+					}
+				],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('SELECT  * FROM\n CONTROL.EXTRACT_RUN_PLAN_VW WHERE UPPER(SOURCE_NAME) = UPPER(''',variables('vSource_Name'),''')',' ORDER BY FILE_NAME')",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Loop through folders",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get Source_Path from META",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Get Source_Path from META').output.value",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Get File Metadata",
+							"type": "GetMetadata",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"dataset": {
+									"referenceName": "DS_STORAGE_STAGE_CSV",
+									"type": "DatasetReference",
+									"parameters": {
+										"Folder": {
+											"value": "@concat('/',item().SOURCE_PATH)",
+											"type": "Expression"
+										},
+										"File": "*",
+										"Container": {
+											"value": "@pipeline().globalParameters.StagingContainer",
+											"type": "Expression"
+										}
+									}
+								},
+								"fieldList": [
+									"childItems"
+								],
+								"storeSettings": {
+									"type": "AzureBlobStorageReadSettings",
+									"recursive": true
+								},
+								"formatSettings": {
+									"type": "DelimitedTextReadSettings"
+								}
+							}
+						},
+						{
+							"name": "Generate Run Plan",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "Get File Metadata",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL  CONTROL.PR_CREATE_EXTRACT_RUN_PLAN_FILE(''',variables('vSource_Name'),''',''',item().SOURCE_PATH,''',$$',activity('Get File Metadata').output.childitems,'$$,''0'',''0'')')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake",
+									"type": "DatasetReference"
+								}
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Get Source_Path from META",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('SELECT distinct SOURCE_PATH FROM CONTROL.EXTRACT_META  WHERE ACTIVE_FLAG = TRUE AND UPPER(SOURCE_NAME) = UPPER(''' , variables('vSource_Name'),''')')",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			}
+		],
+		"variables": {
+			"vSnowflake_Database": {
+				"type": "String",
+				"defaultValue": "SnowflakeDatabase"
+			},
+			"vSource_Name": {
+				"type": "String",
+				"defaultValue": "POC_EXCEL"
+			},
+			"vConst_Complete": {
+				"type": "String",
+				"defaultValue": "COMPLETED"
+			},
+			"vConst_Fail": {
+				"type": "String",
+				"defaultValue": "FAILED"
+			},
+			"vConst_BlobCopy_Status": {
+				"type": "String",
+				"defaultValue": "source_extract_status"
+			},
+			"vConst_Provision_Status": {
+				"type": "String",
+				"defaultValue": "provision_status"
+			},
+			"vConst_Run_Status": {
+				"type": "String",
+				"defaultValue": "extract_run_plan_status"
+			},
+			"vConst_Rows_Read": {
+				"type": "String",
+				"defaultValue": "source_rows_read"
+			},
+			"vConst_Rows_Copied": {
+				"type": "String",
+				"defaultValue": "source_rows_copied"
+			},
+			"vRows_Read": {
+				"type": "String",
+				"defaultValue": "0"
+			},
+			"vRows_Copied": {
+				"type": "String",
+				"defaultValue": "0"
+			},
+			"vStage_File_Type": {
+				"type": "String",
+				"defaultValue": "JSON"
+			},
+			"vConst_Skip": {
+				"type": "String",
+				"defaultValue": "SKIPPED"
+			},
+			"vConst_SourceArchive_Status": {
+				"type": "String",
+				"defaultValue": "source_archive_status"
+			},
+			"vConst_StageArchive_Status": {
+				"type": "String",
+				"defaultValue": "stage_archive_status"
+			},
+			"vCopy_Error": {
+				"type": "String"
+			},
+			"vFolder_Array": {
+				"type": "Array"
+			}
+		},
+		"folder": {
+			"name": "ALTIDA/00 Templates/01 Extract/02 File"
+		},
+		"annotations": []
+	}
+}

@@ -1,0 +1,160 @@
+{
+	"name": "PL_JOB_SEQUENTIAL_RUN_V2",
+	"properties": {
+		"description": "Using SNOWFLAKE V2 connector",
+		"activities": [
+			{
+				"name": "Sequential run",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('SELECT  * FROM\n CONTROL.LOAD_RUN_PLAN_VW WHERE SOURCE_NAME =''',pipeline().parameters.P_Source_Name,'''',' AND JOB_GROUP = ''',pipeline().parameters.P_Group_Name,''' AND JOB_RUN_SEQ <> 0 ORDER BY JOB_RUN_SEQ' )",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Loop sequential run",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Sequential run",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Sequential run').output.value",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "Run Seq Job",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "if BATCH ID exists",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SnowflakeV2Source",
+									"query": {
+										"value": "@concat('CALL CONTROL.PR_RUN_LOAD_PLAN(',item().LOAD_RUN_PLAN_ID,')')",
+										"type": "Expression"
+									},
+									"exportSettings": {
+										"type": "SnowflakeExportCopyCommand"
+									}
+								},
+								"dataset": {
+									"referenceName": "DS_Snowflake",
+									"type": "DatasetReference"
+								}
+							}
+						},
+						{
+							"name": "if BATCH ID exists",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(pipeline().parameters.P_Batch_Id,'')",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "SET BATCH ID",
+										"type": "Lookup",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "7.00:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "SnowflakeV2Source",
+												"query": {
+													"value": "@concat('CALL CONTROL.PR_LOG_LOAD_PLAN(', item().LOAD_RUN_PLAN_ID,',''',variables('vConst_Batch_Id'),''', ''',pipeline().parameters.P_Batch_Id,''', 0,''SUCCESSFUL'');')",
+													"type": "Expression"
+												},
+												"exportSettings": {
+													"type": "SnowflakeExportCopyCommand"
+												}
+											},
+											"dataset": {
+												"referenceName": "DS_Snowflake",
+												"type": "DatasetReference"
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"P_Source_Name": {
+				"type": "string"
+			},
+			"P_Group_Name": {
+				"type": "string"
+			},
+			"P_Batch_Id": {
+				"type": "string"
+			}
+		},
+		"variables": {
+			"vConst_Batch_Id": {
+				"type": "String",
+				"defaultValue": "batch_id"
+			}
+		},
+		"folder": {
+			"name": "ALTIDA/00 Shared"
+		},
+		"annotations": []
+	}
+}

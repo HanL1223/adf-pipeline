@@ -1,0 +1,40 @@
+{
+	"name": "DS_Storage_Parquetfiles_Shared",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cwraseedpst",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"Folder": {
+				"type": "string"
+			},
+			"File": {
+				"type": "string"
+			},
+			"Container": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "03 Storage"
+		},
+		"annotations": [],
+		"type": "Parquet",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"folderPath": {
+					"value": "@dataset().Folder",
+					"type": "Expression"
+				},
+				"container": {
+					"value": "@dataset().Container",
+					"type": "Expression"
+				}
+			},
+			"compressionCodec": "none"
+		},
+		"schema": []
+	}
+}

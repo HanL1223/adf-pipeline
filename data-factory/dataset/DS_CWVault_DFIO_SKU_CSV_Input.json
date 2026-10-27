@@ -1,0 +1,43 @@
+{
+	"name": "DS_CWVault_DFIO_SKU_CSV_Input",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "NetworkDrive_CWVault",
+			"type": "LinkedServiceReference"
+		},
+		"folder": {
+			"name": "06 NetworkDrive"
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "FileServerLocation",
+				"fileName": {
+					"value": "@dataset().InputFile",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@dataset().InputFolder",
+					"type": "Expression"
+				}
+			},
+			"columnDelimiter": ",",
+			"encodingName": "UTF-16LE",
+			"escapeChar": "\\",
+			"firstRowAsHeader": true,
+			"quoteChar": "\""
+		},
+		"schema": [],
+		"parameters": {
+			"InputFolder": {
+				"type": "string",
+				"defaultValue": "Data and Analytics"
+			},
+			"InputFile": {
+				"type": "string",
+				"defaultValue": "DFIO_SKU.csv"
+			}
+		}
+	}
+}

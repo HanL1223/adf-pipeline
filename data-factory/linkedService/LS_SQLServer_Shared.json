@@ -1,0 +1,55 @@
+{
+	"name": "LS_SQLServer_Shared",
+	"properties": {
+		"type": "SqlServer",
+		"description": "Generic SQL Server linked service with both username and password fetched from Key Vault",
+		"parameters": {
+			"ServerName": {
+				"type": "String"
+			},
+			"DatabaseName": {
+				"type": "String"
+			},
+			"UserNameSecretName": {
+				"type": "String"
+			},
+			"PasswordSecretName": {
+				"type": "String"
+			}
+		},
+		"typeProperties": {
+			"server": "@{linkedService().ServerName}",
+			"database": "@{linkedService().DatabaseName}",
+			"encrypt": "optional",
+			"trustServerCertificate": true,
+			"authenticationType": "SQL",
+			"userName": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": {
+					"value": "@linkedService().UserNameSecretName",
+					"type": "Expression"
+				}
+			},
+			"password": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": {
+					"value": "@linkedService().PasswordSecretName",
+					"type": "Expression"
+				}
+			}
+		},
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		},
+		"annotations": []
+	}
+}

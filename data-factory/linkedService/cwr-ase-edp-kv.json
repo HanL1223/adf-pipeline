@@ -1,0 +1,12 @@
+{
+	"name": "cwr-ase-edp-kv",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "Linked service to Key Vault",
+		"type": "AzureKeyVault",
+		"typeProperties": {
+			"baseUrl": "https://cwr-ae-dev-data-kv.vault.azure.net/"
+		},
+		"annotations": []
+	}
+}

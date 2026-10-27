@@ -1,0 +1,15 @@
+{
+	"name": "cwraseedpsftpdfio",
+	"properties": {
+		"description": "Linked service to Azure Blob Storage",
+		"annotations": [],
+		"type": "AzureBlobStorage",
+		"typeProperties": {
+			"serviceEndpoint": "https://cwraseedpdevsftpdfio.blob.core.windows.net/"
+		},
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

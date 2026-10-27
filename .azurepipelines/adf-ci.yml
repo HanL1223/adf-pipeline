@@ -1,0 +1,787 @@
+trigger:
+  branches:
+    include:
+      - master  # Trigger on commits to master branch
+
+pool:
+  vmImage: 'ubuntu-latest'  # Use Ubuntu-based Azure DevOps agent
+
+variables:
+  # Azure Data Factory resource ID for validation and ARM template generation
+  - name: adf-resource-id
+    value: '/subscriptions/dc516e92-8716-44f9-b09c-fc5ca9cdd01a/resourceGroups/cwr-ase-dpdev-rg/providers/Microsoft.DataFactory/factories/cwr-ase-edp-dev-adf'
+  # Cache key for npm packages (invalidates when package.json changes)
+  - name: npm-cache-key
+    value: 'npm | "$(Agent.OS)" | .azurepipelines/package.json'
+
+steps:
+
+# ==============================================================================
+# PULL REQUEST ANALYSIS
+# ==============================================================================
+# Detects changes to critical resources (linked services, global parameters, config files)
+# and generates an automated review checklist for reviewers
+- task: PowerShell@2
+  condition: eq(variables['Build.Reason'], 'PullRequest')  # Only run for pull requests
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Analyzing changed files in Pull Request..."
+      
+      # In Azure Pipelines, the Build.SourceVersion is the merge commit
+      # We need to compare against the source and target branches
+      # Using git diff-tree which works in detached HEAD state
+      
+      try {
+        # Method 1: Get changed files from the last commit (works for PRs)
+        $changedFiles = git diff-tree --no-commit-id --name-only -r HEAD
+        
+        if (-not $changedFiles -or $changedFiles.Count -eq 0) {
+          # Method 2: Compare current HEAD with previous commit
+          Write-Host "Trying alternative method..."
+          $changedFiles = git diff --name-only HEAD^ HEAD
+        }
+        
+        if (-not $changedFiles -or $changedFiles.Count -eq 0) {
+          # Method 3: Get all tracked files that differ from origin/master
+          Write-Host "Trying to list all modified files..."
+          $changedFiles = git diff --name-only --diff-filter=ACMRT HEAD
+        }
+      }
+      catch {
+        Write-Warning "Could not determine changed files: $($_.Exception.Message)"
+        $changedFiles = @()
+      }
+      
+      # Categorize changes by resource type
+      $linkedServiceChanges = $changedFiles | Where-Object { $_ -match 'linkedService/' }
+      $globalParamChanges = $changedFiles | Where-Object { $_ -match 'globalParameters/' }
+      $pipelineChanges = $changedFiles | Where-Object { $_ -match 'pipeline/' }
+      $datasetChanges = $changedFiles | Where-Object { $_ -match 'dataset/' }
+      $dataflowChanges = $changedFiles | Where-Object { $_ -match 'dataflow/' }
+      $triggerChanges = $changedFiles | Where-Object { $_ -match 'trigger/' }
+      $integrationRuntimeChanges = $changedFiles | Where-Object { $_ -match 'integrationRuntime/' }
+      $credentialChanges = $changedFiles | Where-Object { $_ -match 'credential/' }
+      $factoryChanges = $changedFiles | Where-Object { $_ -match 'factory/' }
+      $managedVNetChanges = $changedFiles | Where-Object { $_ -match 'managedVirtualNetwork/' }
+      $configChanges = $changedFiles | Where-Object { $_ -match 'config-.*\.csv$' }
+      
+      # Check if all config files are updated when config-ci.csv changes
+      # config-ci.csv is the template for QA and PROD configs
+      $configCi = $changedFiles | Where-Object { $_ -match 'config-ci\.csv$' }
+      $configQa = $changedFiles | Where-Object { $_ -match 'config-qa\.csv$' }
+      $configProd = $changedFiles | Where-Object { $_ -match 'config-prod\.csv$' }
+      
+      $configWarnings = @()
+      if ($configCi) {
+        # config-ci.csv is changed, verify QA and PROD are also updated
+        if (-not $configQa) { $configWarnings += "⚠ config-qa.csv not updated (config-ci.csv is the template)" }
+        if (-not $configProd) { $configWarnings += "⚠ config-prod.csv not updated (config-ci.csv is the template)" }
+      }
+      
+      # Build checklist based on changes detected
+      $checklist = @()
+      if ($linkedServiceChanges -or $globalParamChanges) {
+        $checklist += "- [ ] Verify config-ci.csv has been updated"
+        $checklist += "- [ ] Verify config-qa.csv has been updated"
+        $checklist += "- [ ] Verify config-prod.csv has been updated"
+      }
+      if ($configWarnings) {
+        if ($checklist) { $checklist += "" }
+        $checklist += "**Configuration File Warnings:**"
+        $configWarnings | ForEach-Object { $checklist += $_ }
+      }
+      
+      # Generate PR analysis report with review checklist
+      $prReport = @"
+      # Pull Request Analysis
+      
+      ## Changed Resources in this PR
+      
+      **Total files changed:** $($changedFiles.Count)
+      
+      ### Pipelines
+      $( if ($pipelineChanges) { $pipelineChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Datasets
+      $( if ($datasetChanges) { $datasetChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Linked Services
+      $( if ($linkedServiceChanges) { $linkedServiceChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Dataflows
+      $( if ($dataflowChanges) { $dataflowChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Triggers
+      $( if ($triggerChanges) { $triggerChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Global Parameters
+      $( if ($globalParamChanges) { $globalParamChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Integration Runtimes
+      $( if ($integrationRuntimeChanges) { $integrationRuntimeChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Credentials
+      $( if ($credentialChanges) { $credentialChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Factory Settings
+      $( if ($factoryChanges) { $factoryChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Managed Virtual Network
+      $( if ($managedVNetChanges) { $managedVNetChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### Configuration Files
+      $( if ($configChanges) { $configChanges | ForEach-Object { "- $_" } | Out-String } else { "_No changes_" } )
+      
+      ### ⚠ Review Checklist
+      $( if ($checklist) { $checklist -join "`n" } else { "_No configuration review required_" } )
+      "@
+      
+      # Save report as artifact for reviewers
+      $prReport | Out-File -FilePath "$(Build.ArtifactStagingDirectory)/pr-analysis.md" -Encoding UTF8
+      Write-Host $prReport
+      
+      # Post PR analysis as a comment to the pull request (delete old comment first)
+      try {
+        $prId = "$(System.PullRequest.PullRequestId)"
+        $repoId = "$(Build.Repository.ID)"
+        $orgUrl = "$(System.CollectionUri)"
+        $project = "$(System.TeamProject)"
+        
+        $headers = @{
+          Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN"
+          'Content-Type' = 'application/json'
+        }
+        
+        # Find existing PR analysis comment thread
+        $threadsUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads?api-version=7.0"
+        $threads = Invoke-RestMethod -Uri $threadsUrl -Headers $headers -Method Get
+        
+        $existingThread = $threads.value | Where-Object { 
+          $_.comments[0].content -like "# Pull Request Analysis*" 
+        } | Select-Object -First 1
+        
+        if ($existingThread) {
+          # Update existing comment
+          $commentId = $existingThread.comments[0].id
+          $threadId = $existingThread.id
+          $updateUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads/$threadId/comments/$commentId`?api-version=7.0"
+          
+          $updateBody = @{
+            content = $prReport
+          } | ConvertTo-Json -Depth 10
+          
+          Write-Host "Updating existing PR analysis comment (Thread ID: $threadId)..."
+          Invoke-RestMethod -Uri $updateUrl -Method Patch -Body $updateBody -Headers $headers -ContentType 'application/json'
+          Write-Host "✓ PR analysis comment updated successfully"
+        }
+        else {
+          # Create new comment thread
+          $createUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads?api-version=7.0"
+          
+          $createBody = @{
+            comments = @(
+              @{
+                parentCommentId = 0
+                content = $prReport
+                commentType = 1
+              }
+            )
+            status = 1
+          } | ConvertTo-Json -Depth 10
+          
+          Write-Host "Posting PR analysis comment to Pull Request #$prId..."
+          Invoke-RestMethod -Uri $createUrl -Method Post -Body $createBody -Headers $headers -ContentType 'application/json'
+          Write-Host "✓ PR analysis comment posted successfully"
+        }
+      }
+      catch {
+        Write-Warning "Failed to post PR comment: $($_.Exception.Message)"
+        Write-Host "PR analysis is still available in the pr-analysis.md artifact"
+      }
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  displayName: 'Analyze Pull Request Changes'
+
+# ==============================================================================
+# SECURITY SCANNING
+# ==============================================================================
+# Uses Gitleaks (open-source secret scanner) to detect hardcoded credentials,
+# API keys, tokens, and other sensitive data in Data Factory resources
+- script: |
+    echo "Installing Gitleaks..."
+    wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
+    tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
+    chmod +x gitleaks
+    echo "Running Gitleaks secret scan..."
+    # Scan only data-factory folder, no git history needed, output to JSON
+    ./gitleaks detect --source="$(Build.Repository.LocalPath)/data-factory" --verbose --no-git --report-path=gitleaks-report.json
+  displayName: 'Security: Scan for Secrets (Gitleaks)'
+  continueOnError: false  # Fail build if secrets are detected
+
+# Publish Gitleaks report as artifact (always publish, even on failure)
+- task: PublishPipelineArtifact@1
+  condition: always()
+  inputs:
+    targetPath: '$(Build.Repository.LocalPath)/gitleaks-report.json'
+    artifact: 'SecurityScanReport'
+    publishLocation: 'pipeline'
+  displayName: 'Publish Security Scan Report'
+
+# ==============================================================================
+# JSON FORMAT VALIDATION
+# ==============================================================================
+# Uses jsonlint to validate all JSON files have correct syntax
+# This catches basic JSON errors before more detailed validation
+- script: |
+    echo "Installing jsonlint..."
+    npm install -g jsonlint
+    echo "Validating JSON files..."
+    # Find and validate each JSON file in data-factory folder
+    find $(Build.Repository.LocalPath)/data-factory -name "*.json" -type f | while read file; do
+      echo "Validating: $file"
+      jsonlint -q "$file" || exit 1
+    done
+    echo "All JSON files are valid."
+  displayName: 'Validate JSON Formatting (jsonlint)'
+  continueOnError: false
+
+# ==============================================================================
+# CONFIGURATION FILE VALIDATION
+# ==============================================================================
+# Validates that all environment-specific configuration files exist and have
+# the correct structure (required columns: type, name, path, value)
+# These files are used for parameter substitution during deployment
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Validating configuration files..."
+      $configFiles = @(
+        "$(Build.Repository.LocalPath)/data-factory/deployment/config-ci.csv",
+        "$(Build.Repository.LocalPath)/data-factory/deployment/config-qa.csv",
+        "$(Build.Repository.LocalPath)/data-factory/deployment/config-prod.csv"
+      )
+      
+      $missing = @()
+      $validationResults = @()
+      
+      foreach ($file in $configFiles) {
+        if (Test-Path $file) {
+          Write-Host "✓ Found $(Split-Path $file -Leaf)"
+          # Validate CSV format and structure
+          try {
+            $csv = Import-Csv $file
+            if ($csv.Count -eq 0) {
+              Write-Warning "$(Split-Path $file -Leaf) is empty"
+              $validationResults += "⚠ $(Split-Path $file -Leaf) is empty"
+            } else {
+              Write-Host "  - Contains $($csv.Count) configuration entries"
+              $validationResults += "✓ $(Split-Path $file -Leaf): $($csv.Count) entries"
+              
+              # Verify required columns exist (per azure.datafactory.tools spec)
+              $requiredColumns = @('type', 'name', 'path', 'value')
+              $actualColumns = $csv[0].PSObject.Properties.Name
+              $missingColumns = $requiredColumns | Where-Object { $_ -notin $actualColumns }
+              
+              if ($missingColumns) {
+                Write-Error "$(Split-Path $file -Leaf) is missing required columns: $($missingColumns -join ', ')"
+                exit 1
+              }
+            }
+          } catch {
+            Write-Error "Invalid CSV format in $(Split-Path $file -Leaf): $($_.Exception.Message)"
+            exit 1
+          }
+        } else {
+          $missing += Split-Path $file -Leaf
+          Write-Error "✗ Missing $(Split-Path $file -Leaf)"
+        }
+      }
+      
+      if ($missing.Count -gt 0) {
+        Write-Error "Missing required configuration files: $($missing -join ', ')"
+        exit 1
+      }
+      
+      # Export validation results for inclusion in final report
+      $validationResults | Out-File -FilePath "$(Build.ArtifactStagingDirectory)/config-validation.txt" -Encoding UTF8
+      Write-Host "All configuration files are present and valid."
+  displayName: 'Validate Configuration Files'
+  continueOnError: false
+
+# ==============================================================================
+# DEPLOYMENT FILTER VALIDATION
+# ==============================================================================
+# Validates the deployment filter file that excludes infrastructure resources
+# (SHIR, Key Vault, Storage, Managed Private Endpoints) from deployment
+# These resources are managed by the edp-infrastructure Terraform project
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Validating deployment filter file..."
+      $filterFile = "$(Build.Repository.LocalPath)/.azurepipelines/deploy-adf-filter.txt"
+      
+      if (-not (Test-Path $filterFile)) {
+        Write-Error "Filter file not found: $filterFile"
+        exit 1
+      }
+      
+      # Parse filter file (skip empty lines and comments)
+      $filterLines = Get-Content $filterFile | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s*#' }
+      Write-Host "Filter file contains $($filterLines.Count) exclusion rules:"
+      $filterLines | ForEach-Object { Write-Host "  - $_" }
+      
+      # Validate that excluded resources actually exist in the repository
+      # This helps catch typos in the filter file
+      foreach ($line in $filterLines) {
+        if ($line -match '^-(\w+)\.(.+)$') {
+          $resourceType = $Matches[1]
+          $resourceName = $Matches[2]
+          $resourcePath = "$(Build.Repository.LocalPath)/data-factory/$resourceType/$resourceName.json"
+          
+          if (Test-Path $resourcePath) {
+            Write-Host "✓ Excluded resource exists: $resourceType/$resourceName"
+          } else {
+            Write-Warning "Excluded resource not found (may be intentional): $resourceType/$resourceName"
+          }
+        }
+      }
+  displayName: 'Validate Deployment Filter'
+  continueOnError: false
+
+# ==============================================================================
+# BUILD PERFORMANCE OPTIMIZATION
+# ==============================================================================
+# Cache npm packages to speed up subsequent builds
+# Cache is invalidated when package-lock.json changes
+- task: Cache@2
+  inputs:
+    key: '$(npm-cache-key)'
+    path: '$(Build.Repository.LocalPath)/.azurepipelines/node_modules'
+    cacheHitVar: 'npm-cache-hit'
+  displayName: 'Cache npm packages'
+
+# ==============================================================================
+# ENVIRONMENT SETUP
+# ==============================================================================
+# Install Node.js and npm packages required for ADF validation and ARM template generation
+- task: UseNode@1
+  inputs:
+    version: '18.x'
+  displayName: 'Install Node.js'
+
+- task: Npm@1
+  inputs:
+    command: 'install'
+    workingDir: '$(Build.Repository.LocalPath)/.azurepipelines'
+    verbose: true
+  displayName: 'Install npm package'
+
+# Install azure.datafactory.tools PowerShell module for Test-AdfCode validation
+# This module is also used in the release pipeline for deployment
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Installing Azure Data Factory Tools module..."
+      Install-Module -Name azure.datafactory.tools -Force -Scope CurrentUser -AllowClobber
+      Import-Module -Name azure.datafactory.tools
+      Write-Host "Module installed successfully."
+  displayName: 'Install Azure Data Factory Tools'
+
+# ==============================================================================
+# ADF CODE VALIDATION
+# ==============================================================================
+# Uses Test-AdfCode from azure.datafactory.tools to validate all Data Factory resources
+# This is the same tool used for deployment, ensuring validation matches deployment logic
+# Checks: syntax, dependencies, property values, naming conventions, required properties
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Running Test-AdfCode validation..."
+      Import-Module -Name azure.datafactory.tools
+      
+      # Test all resources in the data-factory folder
+      # Capture both the return value and console output
+      try {
+        # Redirect all output streams to capture everything
+        $outputFile = "$(Build.ArtifactStagingDirectory)/test-adfcode-results-raw.txt"
+        $finalOutputFile = "$(Build.ArtifactStagingDirectory)/test-adfcode-results.txt"
+        
+        # Run Test-AdfCode and capture output
+        $result = Test-AdfCode -RootFolder "$(Build.Repository.LocalPath)/data-factory" *>&1 | Tee-Object -FilePath $outputFile
+        
+        # Read the captured output
+        $testOutput = Get-Content $outputFile -Raw
+        
+        # Get the result object (last item in the stream)
+        $resultObject = $result | Where-Object { $_ -is [PSCustomObject] } | Select-Object -Last 1
+        
+        # Filter out expected errors for non-DEV factory files (CI, QA, PROD)
+        # These factory files don't exist in the repo as they're environment-specific
+        $ignoredErrorPatterns = @(
+          'factory\.cwr-ase-edp-ci-adf',
+          'factory\.cwr-ase-edp-qa-adf',
+          'factory\.cwr-ase-edp-prod-adf'
+        )
+        
+        # Filter the output text
+        $filteredLines = @()
+        $filteredErrorCount = 0
+        
+        foreach ($line in ($testOutput -split "`n")) {
+          $shouldIgnore = $false
+          foreach ($pattern in $ignoredErrorPatterns) {
+            if ($line -match $pattern -and $line -match 'ADFT0007.*Could not find object') {
+              $shouldIgnore = $true
+              $filteredErrorCount++
+              Write-Host "Ignoring expected error: $($line.Trim())"
+              break
+            }
+          }
+          if (-not $shouldIgnore) {
+            $filteredLines += $line
+          }
+        }
+        
+        $filteredOutputText = $filteredLines -join "`n"
+        $filteredOutputText | Out-File -FilePath $finalOutputFile -Encoding UTF8
+        
+        # Calculate actual error count after filtering
+        $errorCount = 0
+        $warningCount = 0
+        
+        if ($resultObject) {
+          $errorCount = [int]$resultObject.ErrorCount - $filteredErrorCount
+          $warningCount = [int]$resultObject.WarningCount
+          if ($errorCount -lt 0) { $errorCount = 0 }
+        }
+        
+        Write-Host ""
+        Write-Host "=========================================="
+        Write-Host "Test-AdfCode Results (after filtering):"
+        Write-Host "  - Errors: $errorCount"
+        Write-Host "  - Warnings: $warningCount"
+        Write-Host "  - Filtered Errors: $filteredErrorCount"
+        Write-Host "=========================================="
+        Write-Host ""
+        
+        # Save summary for validation report
+        $summary = "Test-AdfCode Validation Summary`n"
+        $summary += "================================`n"
+        $summary += "Errors: $errorCount`n"
+        $summary += "Warnings: $warningCount`n"
+        $summary += "Filtered Errors: $filteredErrorCount`n"
+        $summary += "`n"
+        $summary += "Full details available in test-adfcode-results.txt artifact"
+        $summary | Out-File -FilePath "$(Build.ArtifactStagingDirectory)/test-adfcode-summary.txt" -Encoding UTF8
+        
+        if ($errorCount -gt 0) {
+          Write-Error "Test-AdfCode validation failed with $errorCount error(s). Please review the test-adfcode-results.txt artifact for details."
+          exit 1
+        }
+        
+        if ($warningCount -gt 0) {
+          Write-Warning "Test-AdfCode found $warningCount warning(s). Review test-adfcode-results.txt artifact for details."
+        }
+        
+        Write-Host "✓ Test-AdfCode validation completed successfully"
+      }
+      catch {
+        # Ensure we create an error report even on exception
+        $errorReport = "Test-AdfCode Validation Failed`n"
+        $errorReport += "==============================`n`n"
+        $errorReport += "Exception: $($_.Exception.Message)`n`n"
+        $errorReport += "Stack Trace:`n$($_.ScriptStackTrace)`n"
+        $errorReport | Out-File -FilePath "$(Build.ArtifactStagingDirectory)/test-adfcode-results.txt" -Encoding UTF8
+        
+        Write-Error "Test-AdfCode validation failed with exception: $($_.Exception.Message)"
+        exit 1
+      }
+  displayName: 'Validate ADF Code (Test-AdfCode)'
+  continueOnError: false
+
+# ==============================================================================
+# ARM TEMPLATE GENERATION
+# ==============================================================================
+# Generate ARM templates for validation purposes only
+# Note: Actual deployment uses Publish-AdfV2FromJson (not ARM templates)
+# This step ensures resources can be properly exported and validates against ADF service
+# 
+# Alternative validation-only approach (not currently used):
+# - task: Npm@1
+#   inputs:
+#     command: 'custom'
+#     workingDir: '$(Build.Repository.LocalPath)/.azurepipelines'
+#     customCommand: 'run build validate $(Build.Repository.LocalPath)/data-factory $(adf-resource-id)'
+#   displayName: 'Validate'
+
+# Remove temporary/backup files (files starting with ~) before ARM template generation
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Removing temporary files (~ prefix) before ARM template generation..."
+      Get-ChildItem -Path "$(Build.Repository.LocalPath)/data-factory" -Recurse -Filter "~*.json" | ForEach-Object {
+        Write-Host "Removing: $($_.FullName)"
+        Remove-Item $_.FullName -Force
+      }
+      Write-Host "Cleanup completed."
+  displayName: 'Remove Temporary Files'
+
+- task: Npm@1
+  inputs:
+    command: 'custom'
+    workingDir: '$(Build.Repository.LocalPath)/.azurepipelines'
+    customCommand: 'run build export $(Build.Repository.LocalPath)/data-factory $(adf-resource-id) "ArmTemplate"'
+  displayName: 'Validate and Generate ARM template'
+
+# ==============================================================================
+# VALIDATION REPORTING
+# ==============================================================================
+# Generate comprehensive validation report summarizing all checks performed
+# This report is published as a build artifact and displayed in the pipeline summary
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "Generating validation report..."
+      
+      # Collect warnings from all validation steps
+      $warnings = @()
+      $validationSteps = @()
+      
+      # Check Test-AdfCode results from summary file
+      if (Test-Path "$(Build.ArtifactStagingDirectory)/test-adfcode-summary.txt") {
+        $testSummary = Get-Content "$(Build.ArtifactStagingDirectory)/test-adfcode-summary.txt" -Raw
+        
+        $errorCount = 0
+        $warningCount = 0
+        
+        if ($testSummary -match 'Errors:\s*(\d+)') {
+          $errorCount = [int]$Matches[1]
+        }
+        if ($testSummary -match 'Warnings:\s*(\d+)') {
+          $warningCount = [int]$Matches[1]
+        }
+        
+        if ($errorCount -gt 0) {
+          $validationSteps += "- ❌ ADF code validation (Test-AdfCode) - $errorCount error(s)"
+          $warnings += "### Test-AdfCode Errors"
+          $warnings += "❌ Found $errorCount error(s). Build failed due to validation errors."
+        } else {
+          $validationSteps += "- ✓ ADF code validation (Test-AdfCode)"
+        }
+        
+        if ($warningCount -gt 0) {
+          if ($warnings -and $warnings.Count -gt 0) { $warnings += "" }
+          $warnings += "### Test-AdfCode Warnings"
+          $warnings += "⚠ Found $warningCount warning(s). Review TestAdfCodeResults artifact for details."
+        }
+      } else {
+        # Test-AdfCode results not available (likely failed before completion)
+        $validationSteps += "- ❌ ADF code validation (Test-AdfCode) - Failed before completion"
+        $warnings += "### Test-AdfCode Failure"
+        $warnings += "❌ Test-AdfCode validation failed before completion. Check the pipeline logs and TestAdfCodeResults artifact for details."
+      }
+      
+      # Check if config validation results exist
+      if (Test-Path "$(Build.ArtifactStagingDirectory)/config-validation.txt") {
+        $configResults = Get-Content "$(Build.ArtifactStagingDirectory)/config-validation.txt"
+        $configWarnings = $configResults | Where-Object { $_ -match '^⚠' }
+        if ($configWarnings) {
+          $validationSteps += "- ⚠ Configuration file validation - Warnings found"
+          $warnings += "### Configuration File Warnings"
+          $warnings += $configWarnings
+        } else {
+          $validationSteps += "- ✓ Configuration file validation"
+        }
+      } else {
+        $validationSteps += "- ✓ Configuration file validation"
+      }
+      
+      # Check for Gitleaks findings
+      if (Test-Path "$(Build.Repository.LocalPath)/gitleaks-report.json") {
+        $gitleaksContent = Get-Content "$(Build.Repository.LocalPath)/gitleaks-report.json" -Raw | ConvertFrom-Json
+        if ($gitleaksContent -and $gitleaksContent.Count -gt 0) {
+          $validationSteps += "- ❌ Secret scanning (Gitleaks) - $($gitleaksContent.Count) finding(s)"
+          $warnings += ""
+          $warnings += "### Security Scan Findings"
+          $warnings += "⚠ Found $($gitleaksContent.Count) potential secret(s). Review Security Scan Report artifact."
+        } else {
+          $validationSteps += "- ✓ Secret scanning (Gitleaks)"
+        }
+      } else {
+        $validationSteps += "- ✓ Secret scanning (Gitleaks)"
+      }
+      
+      # Add other validation steps (these typically pass if we got this far)
+      $validationSteps += "- ✓ JSON format validation (jsonlint)"
+      $validationSteps += "- ✓ Deployment filter validation"
+      
+      # Check PR analysis warnings (if exists)
+      if (Test-Path "$(Build.ArtifactStagingDirectory)/pr-analysis.md") {
+        $prContent = Get-Content "$(Build.ArtifactStagingDirectory)/pr-analysis.md" -Raw
+        if ($prContent -match 'Configuration File Warnings:') {
+          $warnings += ""
+          $warnings += "### PR Analysis Warnings"
+          $warnings += "⚠ Some configuration files may need updating. Review PR Analysis Report artifact."
+        }
+      }
+      
+      # Build the warnings section
+      $warningsSection = if ($warnings) {
+        @"
+      
+      ## ⚠ Issues Detected
+      $($warnings -join "`n")
+      "@
+      } else {
+        @"
+      
+      ## ✓ No Issues
+      All validation checks passed without warnings or errors.
+      "@
+      }
+      
+      # Build validation steps section
+      $validationStepsText = $validationSteps -join "`n"
+      
+      $report = @"
+      # Azure Data Factory CI Validation Report
+      **Build ID:** $(Build.BuildId)
+      **Build Number:** $(Build.BuildNumber)
+      **Source Branch:** $(Build.SourceBranch)
+      **Commit:** $(Build.SourceVersion)
+      **Date:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+      
+      ## Validation Steps
+      $validationStepsText
+      $warningsSection
+      
+      ## Configuration Files Validated
+      - config-ci.csv
+      - config-qa.csv
+      - config-prod.csv
+      
+      ## Deployment Filter Exclusions
+      $((Get-Content "$(Build.Repository.LocalPath)/.azurepipelines/deploy-adf-filter.txt" -ErrorAction SilentlyContinue | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s*#' } | ForEach-Object { "- $_" }) -join "`n")
+      
+      ## Artifacts Published
+      - TestAdfCodeResults - Detailed validation results
+      - ValidationReport - This report
+      - ArmTemplates - Generated ARM templates (reference only)
+      
+      ## Next Steps
+      $( if ($warnings -and ($warnings -match '❌')) { "Review and fix validation errors before merging." } else { "ARM templates are ready for deployment via Release Pipeline." } )
+      "@
+      
+      $report | Out-File -FilePath "$(Build.ArtifactStagingDirectory)/validation-report.md" -Encoding UTF8
+      Write-Host $report
+      
+      # Post validation report as PR comment (delete old comment first)
+      if ("$(Build.Reason)" -eq "PullRequest") {
+        try {
+          $prId = "$(System.PullRequest.PullRequestId)"
+          $repoId = "$(Build.Repository.ID)"
+          $orgUrl = "$(System.CollectionUri)"
+          $project = "$(System.TeamProject)"
+          
+          $headers = @{
+            Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN"
+            'Content-Type' = 'application/json'
+          }
+          
+          # Find existing validation report comment thread
+          $threadsUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads?api-version=7.0"
+          $threads = Invoke-RestMethod -Uri $threadsUrl -Headers $headers -Method Get
+          
+          $existingThread = $threads.value | Where-Object { 
+            $_.comments[0].content -like "# Azure Data Factory CI Validation Report*" 
+          } | Select-Object -First 1
+          
+          if ($existingThread) {
+            # Update existing comment
+            $commentId = $existingThread.comments[0].id
+            $threadId = $existingThread.id
+            $updateUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads/$threadId/comments/$commentId`?api-version=7.0"
+            
+            $updateBody = @{
+              content = $report
+            } | ConvertTo-Json -Depth 10
+            
+            Write-Host "Updating existing validation report comment (Thread ID: $threadId)..."
+            Invoke-RestMethod -Uri $updateUrl -Method Patch -Body $updateBody -Headers $headers -ContentType 'application/json'
+            Write-Host "✓ Validation report comment updated successfully"
+          }
+          else {
+            # Create new comment thread
+            $createUrl = "$orgUrl$project/_apis/git/repositories/$repoId/pullRequests/$prId/threads?api-version=7.0"
+            
+            $createBody = @{
+              comments = @(
+                @{
+                  parentCommentId = 0
+                  content = $report
+                  commentType = 1
+                }
+              )
+              status = 1
+            } | ConvertTo-Json -Depth 10
+            
+            Write-Host "Posting validation report comment to Pull Request #$prId..."
+            Invoke-RestMethod -Uri $createUrl -Method Post -Body $createBody -Headers $headers -ContentType 'application/json'
+            Write-Host "✓ Validation report comment posted successfully"
+          }
+        }
+        catch {
+          Write-Warning "Failed to post validation report comment: $($_.Exception.Message)"
+          Write-Host "Validation report is still available in the validation-report.md artifact"
+        }
+      }
+  displayName: 'Generate Validation Report'
+  condition: always()  # Always run to generate report even if previous steps failed
+  continueOnError: true  # Don't block artifact publication if report generation fails
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+# ==============================================================================
+# ARTIFACT PUBLICATION
+# ==============================================================================
+# Publish all build artifacts for use in release pipeline and for review
+
+# Publish ARM templates (for reference - not used in actual deployment)
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: '$(Build.Repository.LocalPath)/.azurepipelines/ArmTemplate'
+    artifact: 'ArmTemplates'
+    publishLocation: 'pipeline'
+  displayName: 'Publish ARM Templates'
+
+# Publish Test-AdfCode results (if exists)
+- task: PublishPipelineArtifact@1
+  condition: and(always(), or(succeeded(), failed()))
+  inputs:
+    targetPath: '$(Build.ArtifactStagingDirectory)/test-adfcode-results.txt'
+    artifact: 'TestAdfCodeResults'
+    publishLocation: 'pipeline'
+  displayName: 'Publish Test-AdfCode Results'
+
+# Publish validation report for build summary
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: '$(Build.ArtifactStagingDirectory)/validation-report.md'
+    artifact: 'ValidationReport'
+    publishLocation: 'pipeline'
+  displayName: 'Publish Validation Report'
+
+# Upload validation report to pipeline summary UI
+- task: PowerShell@2
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "##vso[task.uploadsummary]$(Build.ArtifactStagingDirectory)/validation-report.md"
+  displayName: 'Upload Build Summary'

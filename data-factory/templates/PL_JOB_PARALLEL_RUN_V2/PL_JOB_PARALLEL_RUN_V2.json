@@ -1,0 +1,169 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_JOB_PARALLEL_RUN_V2')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Using SNOWFLAKE V2 connector",
+				"activities": [
+					{
+						"name": "Parallel run",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "SnowflakeV2Source",
+								"query": {
+									"value": "@concat('SELECT  * FROM\n CONTROL.LOAD_RUN_PLAN_VW WHERE SOURCE_NAME =''',pipeline().parameters.P_Source_Name,'''',' AND JOB_GROUP = ''',pipeline().parameters.P_Group_Name,''' AND JOB_RUN_SEQ = 0 ORDER BY JOB_RUN_SEQ' )",
+									"type": "Expression"
+								},
+								"exportSettings": {
+									"type": "SnowflakeExportCopyCommand"
+								}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Loop sequential run",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Parallel run",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Parallel run').output.value",
+								"type": "Expression"
+							},
+							"isSequential": false,
+							"batchCount": 20,
+							"activities": [
+								{
+									"name": "Run Parallel Job",
+									"type": "Lookup",
+									"dependsOn": [
+										{
+											"activity": "if BATCH ID exists",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "7.00:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SnowflakeV2Source",
+											"query": {
+												"value": "@concat('CALL CONTROL.PR_RUN_LOAD_PLAN(',item().LOAD_RUN_PLAN_ID,')')",
+												"type": "Expression"
+											},
+											"exportSettings": {
+												"type": "SnowflakeExportCopyCommand"
+											}
+										}
+									}
+								},
+								{
+									"name": "if BATCH ID exists",
+									"type": "IfCondition",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"expression": {
+											"value": "@equals(pipeline().parameters.P_Batch_Id,'')",
+											"type": "Expression"
+										},
+										"ifFalseActivities": [
+											{
+												"name": "SET BATCH ID",
+												"type": "Lookup",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SnowflakeV2Source",
+														"query": {
+															"value": "@concat('CALL CONTROL.PR_LOG_LOAD_PLAN(', item().LOAD_RUN_PLAN_ID,',''',variables('vConst_Batch_Id'),''', ''',pipeline().parameters.P_Batch_Id,''', 0,''SUCCESSFUL'');')",
+															"type": "Expression"
+														},
+														"exportSettings": {
+															"type": "SnowflakeExportCopyCommand"
+														}
+													}
+												}
+											}
+										]
+									}
+								}
+							]
+						}
+					}
+				],
+				"parameters": {
+					"P_Source_Name": {
+						"type": "string",
+						"defaultValue": "ELLIPSE"
+					},
+					"P_Group_Name": {
+						"type": "string",
+						"defaultValue": "STAGE_ENRICH"
+					},
+					"P_Batch_Id": {
+						"type": "string"
+					}
+				},
+				"variables": {
+					"vConst_Batch_Id": {
+						"type": "String",
+						"defaultValue": "batch_id"
+					}
+				},
+				"folder": {
+					"name": "00 Shared"
+				},
+				"annotations": []
+			},
+			"dependsOn": []
+		}
+	]
+}

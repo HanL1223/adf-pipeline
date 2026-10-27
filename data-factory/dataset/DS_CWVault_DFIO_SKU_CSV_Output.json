@@ -1,0 +1,49 @@
+{
+	"name": "DS_CWVault_DFIO_SKU_CSV_Output",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cwraseedpst",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"FileName": {
+				"type": "string"
+			},
+			"Container": {
+				"type": "string"
+			},
+			"OutputFolder": {
+				"type": "string",
+				"defaultValue": "CWVAULT/DFIO_SKU"
+			}
+		},
+		"folder": {
+			"name": "06 NetworkDrive"
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"fileName": {
+					"value": "@dataset().FileName",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@dataset().OutputFolder",
+					"type": "Expression"
+				},
+				"container": {
+					"value": "@dataset().Container",
+					"type": "Expression"
+				}
+			},
+			"columnDelimiter": ",",
+			"encodingName": "UTF-16LE",
+			"escapeChar": "\\",
+			"firstRowAsHeader": true,
+			"quoteChar": "\""
+		},
+		"schema": []
+	}
+}

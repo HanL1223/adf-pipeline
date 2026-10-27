@@ -1,0 +1,189 @@
+{
+	"name": "TPL_L_2",
+	"properties": {
+		"description": "Load Template. With SNOWFLAKE V2 connectors.",
+		"activities": [
+			{
+				"name": "Generate job plan",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [
+					{
+						"name": "CALL_COMMAND",
+						"value": "@concat('CALL CONTROL.PR_CREATE_RUN_PLAN(''',variables('vSource_Name'),''')')"
+					}
+				],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('CALL CONTROL.PR_CREATE_LOAD_RUN_PLAN(''',variables('vSource_Name'),''',0)')",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "Get job plan",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Generate job plan",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "7.00:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [
+					{
+						"name": "CALL_COMMAND",
+						"value": "@concat('SELECT  * FROM  CONTROL.ETL_RUN_PLAN_VW WHERE SOURCE_NAME =''',variables('vSource_Name'),'''')"
+					}
+				],
+				"typeProperties": {
+					"source": {
+						"type": "SnowflakeV2Source",
+						"query": {
+							"value": "@concat('SELECT  SOURCE_NAME , JOB_GROUP,JOB_GROUP_SEQ , max(JOB_RUN_SEQ) IsSequential FROM\n CONTROL.LOAD_RUN_PLAN_VW WHERE SOURCE_NAME =''',variables('vSource_Name'),'''',' AND JOB_GROUP_SEQ <> 0  GROUP BY SOURCE_NAME, JOB_GROUP,JOB_GROUP_SEQ  ORDER BY JOB_GROUP_SEQ' )",
+							"type": "Expression"
+						},
+						"exportSettings": {
+							"type": "SnowflakeExportCopyCommand"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Snowflake",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Loop job group",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Get job plan",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Get job plan').output.value",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "Check IsSequential flag",
+							"type": "IfCondition",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(item().IsSequential,'0')",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "Sequential Run",
+										"type": "ExecutePipeline",
+										"dependsOn": [],
+										"policy": {
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"pipeline": {
+												"referenceName": "PL_JOB_SEQUENTIAL_RUN_V2",
+												"type": "PipelineReference"
+											},
+											"waitOnCompletion": true,
+											"parameters": {
+												"P_Source_Name": {
+													"value": "@item().SOURCE_NAME",
+													"type": "Expression"
+												},
+												"P_Group_Name": {
+													"value": "@item().JOB_GROUP",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								],
+								"ifTrueActivities": [
+									{
+										"name": "Parallel Run",
+										"type": "ExecutePipeline",
+										"dependsOn": [],
+										"policy": {
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"pipeline": {
+												"referenceName": "PL_JOB_PARALLEL_RUN_V2",
+												"type": "PipelineReference"
+											},
+											"waitOnCompletion": true,
+											"parameters": {
+												"P_Source_Name": {
+													"value": "@item().SOURCE_NAME",
+													"type": "Expression"
+												},
+												"P_Group_Name": {
+													"value": "@item().JOB_GROUP",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"variables": {
+			"vSnowflake_Database": {
+				"type": "String",
+				"defaultValue": "SnowflakeDatabase"
+			},
+			"vSource_Name": {
+				"type": "String",
+				"defaultValue": "TEST_STOCKDB"
+			}
+		},
+		"folder": {
+			"name": "ALTIDA/00 Templates/02 Load"
+		},
+		"annotations": []
+	}
+}

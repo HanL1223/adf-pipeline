@@ -1,0 +1,38 @@
+{
+	"name": "ILS - Daily delta load",
+	"properties": {
+		"description": "ILS - Daily delta load",
+		"annotations": [],
+		"runtimeState": "Started",
+		"pipelines": [
+			{
+				"pipelineReference": {
+					"referenceName": "E_RDBMS_Shared_SQL_Server",
+					"type": "PipelineReference"
+				},
+				"parameters": {
+					"p_Source_Name": "ILS",
+					"p_Run_Group": "GRP:INCREMENTAL"
+				}
+			}
+		],
+		"type": "ScheduleTrigger",
+		"typeProperties": {
+			"recurrence": {
+				"frequency": "Day",
+				"interval": 1,
+				"startTime": "2025-10-05T00:00:00",
+				"endTime": "2025-10-31T23:59:00",
+				"timeZone": "AUS Eastern Standard Time",
+				"schedule": {
+					"minutes": [
+						15
+					],
+					"hours": [
+						4
+					]
+				}
+			}
+		}
+	}
+}

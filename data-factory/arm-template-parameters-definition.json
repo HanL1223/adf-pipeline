@@ -1,0 +1,83 @@
+{
+    "Microsoft.DataFactory/factories/linkedServices": {
+        "AzureKeyVault": {
+            "properties": {
+                "typeProperties": {
+                    "baseUrl": "=:baseUrl:string"
+                }
+            }
+        },
+        "AzureBlobStorage": {
+            "properties": {
+                "typeProperties": {
+                    "serviceEndpoint": "=:serviceEndpoint:string",
+                    "sasUri": "=:sasUri:secureString"
+                }
+            }
+        },
+        "SnowflakeV2": {
+            "properties": {
+                "typeProperties": {
+                    "accountIdentifier": "=:accountIdentifier:string",
+                    "user": "=:user:string",
+                    "database": "=:database:string",
+                    "warehouse": "=:warehouse:string",
+                    "host": "=:host:string",
+                    "role": "=:role:string",
+                    "privateKey": {
+                        "secretName": "=:secretName:string"
+                    }
+                }
+            }
+        },
+        "FileServer": {
+            "properties": {
+                "typeProperties": {
+                    "host": "=:host:string",
+                    "userId": "=:userId:string",
+                    "password": {
+                        "secretName": "=:secretName:string"
+                    }
+                }
+            }
+        }
+    },
+    "Microsoft.DataFactory/factories/datasets": {
+        "*": {
+            "properties": {
+                "parameters": {
+                    "DfioSourceContainer": {
+                        "defaultValue": "=::string"
+                    },
+                    "InputFolder": {
+                        "defaultValue": "=::string"
+                    },
+                    "InputFile": {
+                        "defaultValue": "=::string"
+                    },
+                    "OutputFolder": {
+                        "defaultValue": "=::string"
+                    }
+                }
+            }
+        }
+    },
+    "Microsoft.DataFactory/factories/globalparameters": {
+        "properties": {
+            "SourceConfig": {
+                "value": "=::object"
+            },
+            "StagingContainer": {
+                "value": "=::string"
+            },
+            "SnowflakeStorageIntegration": {
+                "value": "=::string"
+            }
+        }
+    },
+    "Microsoft.DataFactory/factories/managedVirtualNetworks/managedPrivateEndpoints": {
+        "properties": {
+            "*": "="
+        }
+    }
+}

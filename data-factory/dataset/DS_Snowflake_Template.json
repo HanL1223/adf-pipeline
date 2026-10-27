@@ -1,0 +1,15 @@
+{
+	"name": "DS_Snowflake_Template",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cw_au_edp_snowflake",
+			"type": "LinkedServiceReference"
+		},
+		"folder": {
+			"name": "01 Snowflake"
+		},
+		"annotations": [],
+		"type": "SnowflakeV2Table",
+		"schema": []
+	}
+}

@@ -1,0 +1,16 @@
+{
+	"name": "cwraseedpst",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		},
+		"description": "Linked service to Azure Blob Storage",
+		"type": "AzureBlobStorage",
+		"typeProperties": {
+			"serviceEndpoint": "https://cwraedevdata.blob.core.windows.net/"
+		},
+		"annotations": []
+	}
+}

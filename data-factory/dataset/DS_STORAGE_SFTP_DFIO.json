@@ -1,0 +1,49 @@
+{
+	"name": "DS_STORAGE_SFTP_DFIO",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "cwraseedpsftpdfio",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"Folder": {
+				"type": "string"
+			},
+			"File": {
+				"type": "string"
+			},
+			"DfioSourceContainer": {
+				"type": "string",
+				"defaultValue": "manhatten"
+			}
+		},
+		"folder": {
+			"name": "02 Storage"
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"fileName": {
+					"value": "@dataset().File",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@dataset().Folder",
+					"type": "Expression"
+				},
+				"container": {
+					"value": "@dataset().DfioSourceContainer",
+					"type": "Expression"
+				}
+			},
+			"columnDelimiter": "|",
+			"compressionCodec": "gzip",
+			"compressionLevel": "Fastest",
+			"escapeChar": "\\",
+			"quoteChar": "\""
+		},
+		"schema": []
+	}
+}

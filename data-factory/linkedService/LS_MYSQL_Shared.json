@@ -1,0 +1,53 @@
+{
+	"name": "LS_MYSQL_Shared",
+	"properties": {
+		"description": "Generic MySQL linked service using Key Vault for credentials",
+		"parameters": {
+			"ServerName": {
+				"type": "String"
+			},
+			"Port": {
+				"type": "String"
+			},
+			"DatabaseName": {
+				"type": "String"
+			},
+			"UserNameSecretName": {
+				"type": "String"
+			},
+			"PasswordSecretName": {
+				"type": "String"
+			}
+		},
+		"type": "MySql",
+		"typeProperties": {
+			"server": "@{linkedService().ServerName}",
+			"port": "@{linkedService().Port}",
+			"database": "@{linkedService().DatabaseName}",
+			"userName": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": "@{linkedService().UserNameSecretName}"
+			},
+			"password": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": "@{linkedService().PasswordSecretName}"
+			},
+			"sslMode": 1,
+			"useSystemTrustStore": 1,
+			"driverVersion": "v2"
+		},
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		},
+		"annotations": []
+	}
+}

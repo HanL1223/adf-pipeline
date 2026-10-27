@@ -1,0 +1,139 @@
+{
+	"name": "cwr-ae-dev-data-adf",
+	"properties": {
+		"globalParameters": {
+			"SourceConfig": {
+				"type": "object",
+				"value": {
+					"STOCKDB": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.58",
+						"DatabaseName": "STOCKDB",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					},
+					"ILS": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.79",
+						"DatabaseName": "ILS",
+						"UserNameSecretName": "M1DSSSQL03-Dev-SQL-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL03-Dev-SQL-LocalAccountPassword"
+					},
+					"GENERAL_REFERENCE": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.58",
+						"DatabaseName": "General_Reference",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					},
+					"SKU": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.58",
+						"DatabaseName": "SKU",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					},
+					"TRANSACTION_STORAGE": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.104",
+						"DatabaseName": "TransactionStorage",
+						"UserNameSecretName": "TDB14-Dev-SQL-LocalAccountName",
+						"PasswordSecretName": "TDB14-Dev-SQL-LocalAccountPassword"
+					},
+					"CWMGTSTOREINVOICES": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.58",
+						"DatabaseName": "CWMgtStoreInvoices",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					},
+					"SCAX2012": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.164",
+						"DatabaseName": "SCAX2012",
+						"UserNameSecretName": "TDB16MB-Dev-SQL-LocalAccountName",
+						"PasswordSecretName": "TDB16MB-Dev-SQL-LocalAccountPassword"
+					},
+					"SPSWHSPURCHASE": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.58",
+						"DatabaseName": "SpsWhsPurchase",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					},
+					"PBI05_BI_PRES": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "BI_Presentation",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"PBI05_SUPPLYCHAIN": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "SupplyChain",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"PBI05_TRANSACTIONS_ARCHIVE": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "TransactionsArchive",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"MANHATTAN_ACTIVE": {
+						"SourceType": "MySQL",
+						"ServerName": "172.19.232.11",
+						"Port": "3306",
+						"DatabaseName": "default_dcinventory",
+						"UserNameSecretName": "Manhattan-Active-Dev-MYSQL-LocalAccountName",
+						"PasswordSecretName": "Manhattan-Active-Dev-MYSQL-LocalAccountPassword"
+					},
+					"MERGECO_RETAIL_GRP1": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "BI_Presentation",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"MERGECO_RETAIL_GRP2": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "TransactionsArchive",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"COMMERCIALDATA": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.42.82",
+						"DatabaseName": "CommercialData",
+						"UserNameSecretName": "PBI05-Prod-SQL-LocalAccountName",
+						"PasswordSecretName": "PBI05-Prod-SQL-LocalAccountPassword"
+					},
+					"StoreOrders": {
+						"SourceType": "SqlServer",
+						"ServerName": "192.168.29.105",
+						"DatabaseName": "StoreOrders",
+						"UserNameSecretName": "M1DSSSQL08-Dev-LocalAccountName",
+						"PasswordSecretName": "M1DSSSQL08-Dev-LocalAccountPassword"
+					}
+				}
+			},
+			"StagingContainer": {
+				"type": "string",
+				"value": "staging"
+			},
+			"SnowflakeStorageIntegration": {
+				"type": "string",
+				"value": "EDP_AZURE_SI_DEV"
+			}
+		}
+	},
+	"location": "australiaeast",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "9c59f860-1d7f-4836-ba34-9970c730e6d8",
+		"tenantId": "8bc0280e-b3ad-438a-ba8a-2cf00d19af4a"
+	}
+}

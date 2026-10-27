@@ -1,0 +1,28 @@
+{
+	"name": "cw_au_edp_snowflake_ai_retail_analytics",
+	"properties": {
+		"annotations": [],
+		"type": "SnowflakeV2",
+		"typeProperties": {
+			"authenticationType": "KeyPair",
+			"accountIdentifier": "YK41343",
+			"user": "S_ADF_DEV",
+			"database": "EDP_AI_RETAIL_ANALYTICS_DEV",
+			"warehouse": "DATA_LOAD_DEV",
+			"host": "wogzdtj-au.privatelink.snowflakecomputing.com",
+			"privateKey": {
+				"type": "AzureKeyVaultSecret",
+				"store": {
+					"referenceName": "cwr-ase-edp-kv",
+					"type": "LinkedServiceReference"
+				},
+				"secretName": "EDP-Snowflake-ServiceUser-PrivateKey"
+			}
+		},
+		"version": "1.1",
+		"connectVia": {
+			"referenceName": "shir",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}
