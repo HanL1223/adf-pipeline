@@ -63,10 +63,11 @@ Prepare row        set up the initial row (test: create it; live: create/convert
 Check pair         read-only: validate the delta row + initial row pair
 Get source columns read-only, SQL Server: validate table/columns/window, build the SELECT and batch query
 Get batch ranges   read-only, SQL Server: key ranges, one per file; 0 batches = stop here
-Clear landing      delete this table's old part files in json-priming/<t>/ (also proves the container is writable)
+Check landing      read probe of json-priming/<t>/ (a missing container or no read access stops here)
 ── nothing has changed in BRONZE or the delta row up to this point ──
 Begin prime        lock (initial row ACTIVE), close old plans, delta row OFF, TRUNCATE BRONZE
-Data in            SQL Server ─SHIR─> one gzip JSON file per batch (4 at a time) into json-priming/<table>/
+Data in            clear old part files in json-priming/<t>/, then SQL Server ─SHIR─> one gzip JSON file per batch
+                   (4 at a time) into json-priming/<t>/
 Data out           ATILDA plans one plan per file, then loads them one at a time:
                    copy json-priming/<table>/<file> → snowflake-data/<ATILDA path> → log rows
                    → PR_CREATE_EXTRACT_ARTIFACTS → COMPLETED
@@ -378,7 +379,8 @@ Open the failed activity's error icon. For Data in or Data out, open the child p
 | Fails after Begin, or End STATUS ERROR | Lock released. **Delta row OFF** (live). BRONZE empty or partial | Fix the cause and re-run the **whole** prime. Restore the clone if the data is needed meanwhile |
 | End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners. Re-enabling the delta without a re-prime is the one manual exception: only a CONTROL_DEV_RW holder, with sign-off (sql/03 C) |
 | One file fails to load | The remaining files still load, then Abort runs | In the _JSON_OUT run, open the failed "Load files" iteration to read the error. Fix the cause and re-run the **whole prime** (never _JSON_OUT alone) |
-| "Check landing folder" or "Clear landing folder" fails (container missing, no rights) | Before Begin: nothing changed | Create the landing container or grant the factory identity access (section 3.1), then re-run |
+| "Check landing folder" fails (container missing, no read access) | Before Begin: nothing changed | Create the landing container or grant the factory identity access (section 3.1), then re-run |
+| Data in fails writing or deleting in the landing container (no write access) | After Begin: BRONZE empty, delta row OFF | Grant the factory identity Storage Blob Data Contributor on the container, then re-run. Write access is first used here, which is why a passed test prime in the same factory and container is required before a live prime |
 | The Begin prime activity itself fails (timeout or connection) | Begin may have committed (initial row ACTIVE, delta row OFF). Abort does not run | Check sql/03 A. If the initial row is ACTIVE, re-run with `p_Force = true` |
 | Run cancelled | Initial row ACTIVE (lock), delta row OFF (live) | Check in Monitor that nothing is running, then re-run with `p_Force = true` |
 | "… is ACTIVE: another prime is running, or one was cancelled" | Lock held | As above: confirm, then `p_Force = true` |
@@ -628,8 +630,8 @@ python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pi
 | 12 | Unused parameters removed; leftover template tokens fail the build |
 | 13 | Landing moved to its own container `json-priming` (p_Landing_Container); SOURCE_PATH is always `<lowercase table>/`. ATILDA staging stays in `snowflake-data` |
 | 14 | PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE merged into _JSON_OUT ("Load files" ForEach, house shape): 4 pipelines instead of 5 |
-| 15 | Landing folder checked and cleared before Begin, so a missing container or missing rights fails before anything changes |
-| 16 | Prepare honours p_Force for a row left ACTIVE by a cancelled run, and refuses to move a row onto a path another row uses |
+| 15 | Read probe of the landing folder before Begin (a missing container fails before anything changes); old part files are cleared by Data in after the lock |
+| 16 | Prepare honours p_Force for a row left ACTIVE by a cancelled run, refuses to move a row onto a path another row uses, and stops with the reason when a test row cannot be moved |
 
 ### Open items
 
