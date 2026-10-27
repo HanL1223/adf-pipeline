@@ -37,7 +37,7 @@ For table `<T>`, with its existing delta row in ATILDA:
    Check the result, then run the cleanup pipeline.
 3. **Dry run of the live setup.** Use the live `p_Objects` plus `"window_start":"2999-01-02","window_end":"2999-01-01"` (an impossible window), with `p_Prepare_Live_Row = false`. It always stops before Begin, so nothing changes, and it shows what Prepare would change.
 4. **Live prime:**
-   `p_Objects = [{"table":"<T>","window_column":"<wm>","partition_column":"<key>"}]`, `p_Prepare_Live_Row = true`, window start and end empty.
+   `p_Objects = [{"table":"<T>","window_column":"<wm>","partition_column":"<key>"}]`, `p_Prepare_Live_Row = true`, window start and end empty (integer watermark: set `window_end`, see section 5 D1).
 5. **Verify** with `sql/03_monitor.sql`, then confirm the next daily delta run completes.
 
 Every step, with what to expect, is in section 5.
@@ -292,7 +292,7 @@ FROM EDP_DEV.CONTROL.LOAD_META WHERE TARGET_TABLE_NAME = '<T>' ORDER BY 1;
   | Parquet row | Fails at *Check prepare* with ACTION `LIVE_ROW_NEEDS_CONVERT` |
   | JSON row that needs fixing | Fails with `LIVE_ROW_NEEDS_PREPARE` |
   | No initial row | Fails with `LIVE_ROW_MISSING` |
-  | Already `LIVE_ROW_READY` | Prepare and Check pair pass, then it fails at *Check source columns* (PRIME_SOURCE_INVALID, "Window start must be before window end"). BRONZE and the delta row are untouched |
+  | Already `LIVE_ROW_READY` | Prepare and Check pair pass, then it fails at *Check source columns* (PRIME_SOURCE_INVALID, "Window start must be before window end"; for an integer watermark, "Window bound 2999-01-02 is not an integer"). BRONZE and the delta row are untouched |
 
 For the first three states, Prepare row's MESSAGE lists exactly what Prepare would change. **Remove the two window keys before D1.**
 
@@ -332,7 +332,7 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
 1. **sql/03_monitor.sql** (set stage_table = `<T>`, run_id = RunId, wm_col = `<WM>` in upper case):
    - A: initial row ACTIVE FALSE, delta row ACTIVE TRUE (unless enable_delta was false).
    - B: all plans COMPLETED, and rows per batch match.
-   - The MAX watermark is just below the WINDOW_FILTER end time.
+   - The MAX watermark is just below the WINDOW_FILTER end time (integer watermark: compare `MAX(<wm>)` with `window_end` instead).
 2. **Row count** ≈ total_rows from A4. Rows written after the end time arrive with the next delta.
 3. **Next delta run.** After its scheduled time, check:
    ```sql
