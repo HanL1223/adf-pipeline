@@ -1,8 +1,9 @@
 EXECUTE IMMEDIATE $$
--- JSON variant of tools/sf_prepare.sql (target old_json): the initial row stages JSON (STAGE_FILE_TYPE and
+-- JSON variant of tools/sf_prepare.sql (targets old_json and new_json): the initial row stages JSON (STAGE_FILE_TYPE and
 -- STAGE_FILE_SPEC NULL, as RDBMS rows do), OBJECT_NAME is <table>_part_%.json, and SCHEMA_DRIFT_CODE is copied from
 -- the delta twin (2): JSON has no schema, so columns absent from the first file (all NULL there) are added later
--- instead of being dropped. Everything else is identical.
+-- instead of being dropped. Live mode can also convert the table's Parquet INITIAL_LOAD row to JSON (opt-in, below).
+-- Everything else is identical.
 -- 'Prepare row' Lookup: the setup DML, run as the ADF role (which holds CONTROL_DEV_RW), before 'Check pair'.
 --   Test  (source_from set, table = <source_from>_PRIME_TEST): create the test INITIAL_LOAD row from the live delta
 --         twin if it does not exist yet. New, inactive, separate row; nothing existing changes.
@@ -10,6 +11,10 @@ EXECUTE IMMEDIATE $$
 --         RUN_GROUP DATA_PRIME. With p_Prepare_Live_Row = true, fix that one row (or create it if the table has
 --         none); the old values are returned in OLD_VALUES (the ADF run output is the backup). Otherwise stop and
 --         say exactly what would change.
+--         If the table has no JSON initial row but exactly one Parquet INITIAL_LOAD row (an earlier Parquet onboarding),
+--         p_Prepare_Live_Row = true converts that row in place to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE and
+--         STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from the delta twin) plus the fixes above. Its id, SOURCE_NAME and
+--         SOURCE_PATH stay. OLD_VALUES holds every changed column, so the row can be put back by hand.
 --   Anything else: no change; 'Check pair' reports the problem.
 -- CONTROL text columns carry a collation: COLLATE(col, '') before TRIM with characters and SPLIT_PART.
 -- Tokens {{...}} are replaced by tools/build_pipelines.py.
@@ -29,6 +34,7 @@ DECLARE
     v_needs   BOOLEAN;
     v_old     VARCHAR;
     n_dup     NUMBER DEFAULT 0;
+    n_pq      NUMBER DEFAULT 0;
     res       RESULTSET;
 BEGIN
     -- Cheap input checks first, so a bad parameter never leaves setup DML behind.
@@ -131,14 +137,60 @@ BEGIN
         ELSEIF (n_init = 0) THEN
             SELECT COUNT(*) INTO :n_delta FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'TABLE';
+            SELECT COUNT(*), MAX(EXTRACT_META_ID) INTO :n_pq, :v_id FROM EDP_DEV.CONTROL.EXTRACT_META
+            WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND UPPER(STAGE_FILE_TYPE) = 'PARQUET'
+              AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
             v_path := 'data_prime/' || LOWER(v_table) || '/';
             SELECT COUNT(*) INTO :n_path FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ '));
-            IF (NOT {{PREPARE_LIVE}}) THEN
+            IF (n_pq = 1) THEN
+                -- Parquet INITIAL_LOAD row from an earlier onboarding: convert it in place (opt-in).
+                SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'OBJECT_NAME', OBJECT_NAME,
+                                                  'STAGE_FILE_TYPE', STAGE_FILE_TYPE, 'STAGE_FILE_SPEC', STAGE_FILE_SPEC,
+                                                  'SCHEMA_DRIFT_CODE', SCHEMA_DRIFT_CODE, 'SQL_STATEMENT', SQL_STATEMENT,
+                                                  'PARALLEL_STAGE_LOAD_FLAG', PARALLEL_STAGE_LOAD_FLAG,
+                                                  'RUN_GROUP', RUN_GROUP, 'ACTIVE_FLAG', ACTIVE_FLAG)),
+                       COALESCE(ACTIVE_FLAG, FALSE)
+                INTO :v_old, :v_active
+                FROM EDP_DEV.CONTROL.EXTRACT_META WHERE EXTRACT_META_ID = :v_id;
+                IF (NOT {{PREPARE_LIVE}}) THEN
+                    v_status := 'ERROR';
+                    v_action := 'LIVE_ROW_NEEDS_CONVERT';
+                    msg := 'Initial row ' || v_id || ' is a Parquet row (now ' || v_old || '). The JSON prime needs it '
+                        || 'converted to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, '
+                        || 'SCHEMA_DRIFT_CODE from the delta twin, SQL_STATEMENT NULL, PARALLEL_STAGE_LOAD_FLAG TRUE, '
+                        || 'RUN_GROUP DATA_PRIME). Nothing changed. Re-run with p_Prepare_Live_Row = true to apply; '
+                        || 'the old values are recorded in this output.';
+                ELSEIF (n_delta <> 1) THEN
+                    v_status := 'ERROR';
+                    msg := 'Cannot convert initial row ' || v_id || ': expected 1 delta twin (SOURCE_TYPE TABLE) for '
+                        || v_table || ', found ' || n_delta || '.';
+                ELSEIF (v_active) THEN
+                    v_status := 'ERROR';
+                    msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed.';
+                ELSE
+                    UPDATE EDP_DEV.CONTROL.EXTRACT_META m
+                    SET OBJECT_NAME = d.OBJ, STAGE_FILE_TYPE = NULL, STAGE_FILE_SPEC = NULL, SCHEMA_DRIFT_CODE = d.SDC,
+                        SQL_STATEMENT = NULL, PARALLEL_STAGE_LOAD_FLAG = TRUE, RUN_GROUP = 'DATA_PRIME'
+                    FROM (SELECT LOWER(SPLIT_PART(COLLATE(OBJECT_NAME, ''), '.', -1)) || '_part_%.json' AS OBJ,
+                                 COALESCE(SCHEMA_DRIFT_CODE, 2) AS SDC
+                          FROM EDP_DEV.CONTROL.EXTRACT_META
+                          WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'TABLE') d
+                    WHERE m.EXTRACT_META_ID = :v_id AND COALESCE(m.ACTIVE_FLAG, FALSE) = FALSE
+                      AND UPPER(m.STAGE_FILE_TYPE) = 'PARQUET';
+                    IF (SQLROWCOUNT = 0) THEN
+                        v_status := 'ERROR';
+                        msg := 'Initial row ' || v_id || ' changed before it could be converted; not changed.';
+                    ELSE
+                        v_action := 'LIVE_ROW_CONVERTED';
+                        msg := 'Converted initial row ' || v_id || ' from Parquet to JSON. Old values: ' || v_old || '.';
+                    END IF;
+                END IF;
+            ELSEIF (NOT {{PREPARE_LIVE}}) THEN
                 v_status := 'ERROR';
                 v_action := 'LIVE_ROW_MISSING';
                 msg := v_table || ' has no JSON INITIAL_LOAD row. Nothing changed. Re-run with p_Prepare_Live_Row = true to '
-                    || 'create it; this is refused while a Parquet INITIAL_LOAD row exists for the table.';
+                    || 'create it.';
             ELSEIF (n_delta <> 1) THEN
                 v_status := 'ERROR';
                 msg := 'Cannot create the initial row: expected 1 delta twin (SOURCE_TYPE TABLE) for ' || v_table

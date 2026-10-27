@@ -1,4 +1,4 @@
--- JSON variant of tools/sf_check_pair.sql (target old_json): the initial row must stage JSON (STAGE_FILE_TYPE NULL)
+-- JSON variant of tools/sf_check_pair.sql (targets old_json and new_json): the initial row must stage JSON (STAGE_FILE_TYPE NULL)
 -- with OBJECT_NAME <prefix>_part_%.json. Everything else is identical.
 -- 'Check pair' Lookup (read-only). Finds the INITIAL_LOAD / delta pair of one STAGE_TABLE_NAME, validates it and
 -- derives everything later steps need. Tokens {{...}} are replaced by tools/build_pipelines.py.

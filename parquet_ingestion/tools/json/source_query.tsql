@@ -1,4 +1,4 @@
--- JSON variant of tools/source_query.tsql (target old_json): raw SELECT list (delta text), one batch per
+-- JSON variant of tools/source_query.tsql (targets old_json and new_json): raw SELECT list (delta text), one batch per
 -- p_Rows_Per_File rows (each batch is one JSON file), no Parquet column-name check.
 SET NOCOUNT ON;
 -- Inputs. Each value enters once as a literal and is only compared or parsed, never spliced into SQL.

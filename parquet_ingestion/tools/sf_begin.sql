@@ -20,13 +20,16 @@ BEGIN
             || 'Check ADF Monitor, then re-run with p_Force = true.';
     ELSE
         BEGIN
-            -- Old open plans of the initial row belong to earlier primes; their files are gone.
+            -- Old open plans of the initial row belong to earlier primes. Close them, or ATILDA keeps re-processing them
+            -- (PR_CREATE_EXTRACT_ARTIFACTS touches every open plan of the row). EXTRACT_RUN_PLAN_VW counts a plan as open
+            -- while its latest extract_run_plan_status is PLANNED; etlplan_status alone does not close it.
             LET plans RESULTSET := (SELECT EXTRACT_RUN_PLAN_ID FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW
                                     WHERE EXTRACT_META_ID = {{INIT}} AND EXTRACT_RUN_PLAN_STATUS = 'PLANNED');
             LET c_plans CURSOR FOR plans;
             FOR rec IN c_plans DO
                 v_pid := rec.EXTRACT_RUN_PLAN_ID;
                 CALL EDP_DEV.CONTROL.PR_LOG_EXTRACT_RUN_PLAN(:v_pid, 'etlplan_status', 'ABANDONED', :v_pmsg);
+                CALL EDP_DEV.CONTROL.PR_LOG_EXTRACT_RUN_PLAN(:v_pid, 'extract_run_plan_status', 'ABANDONED', :v_pmsg);
             END FOR;
 
             -- Delta OFF, then re-check: a delta run may have planned since 'Check pair'. Skipped in test mode.

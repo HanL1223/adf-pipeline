@@ -10,7 +10,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "expression": {
-                        "value": "@equals(pipeline().parameters.p_Batch_ID, '')",
+                        "value": "@empty(pipeline().parameters.p_Batch_ID)",
                         "type": "Expression"
                     },
                     "ifFalseActivities": [
@@ -77,37 +77,37 @@
                                 "secureInput": false
                             },
                             "userProperties": [],
-                            "description": "Binary copy of this plan's landing file to its ATILDA staging folder (LVL1_FOLDER_NAME).",
+                            "description": "Copies this plan's landing file (SOURCE_PATH/OBJECT_NAME) to the ATILDA path LVL1_FOLDER_NAME/FILE_NAME, which PR_CREATE_EXTRACT_ARTIFACTS loads.",
                             "typeProperties": {
                                 "source": {
-                                    "type": "BinarySource",
+                                    "type": "ParquetSource",
                                     "storeSettings": {
                                         "type": "AzureBlobStorageReadSettings",
-                                        "recursive": false,
-                                        "wildcardFileName": {
-                                            "value": "@pipeline().parameters.p_File_Name",
-                                            "type": "Expression"
-                                        }
-                                    },
-                                    "formatSettings": {
-                                        "type": "BinaryReadSettings"
+                                        "recursive": false
                                     }
                                 },
                                 "sink": {
-                                    "type": "BinarySink",
+                                    "type": "ParquetSink",
                                     "storeSettings": {
                                         "type": "AzureBlobStorageWriteSettings"
+                                    },
+                                    "formatSettings": {
+                                        "type": "ParquetWriteSettings"
                                     }
                                 },
                                 "enableStaging": false
                             },
                             "inputs": [
                                 {
-                                    "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                    "referenceName": "DS_Storage_Landing_Parquet",
                                     "type": "DatasetReference",
                                     "parameters": {
                                         "Folder": {
                                             "value": "@pipeline().parameters.p_Source_Path",
+                                            "type": "Expression"
+                                        },
+                                        "File": {
+                                            "value": "@pipeline().parameters.p_Object_Name",
                                             "type": "Expression"
                                         },
                                         "Container": {
@@ -119,11 +119,15 @@
                             ],
                             "outputs": [
                                 {
-                                    "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                    "referenceName": "DS_Storage_Landing_Parquet",
                                     "type": "DatasetReference",
                                     "parameters": {
                                         "Folder": {
                                             "value": "@pipeline().parameters.p_Lvl1_Folder_Name",
+                                            "type": "Expression"
+                                        },
+                                        "File": {
+                                            "value": "@pipeline().parameters.p_File_Name",
                                             "type": "Expression"
                                         },
                                         "Container": {
@@ -329,6 +333,9 @@
             "p_Batch_ID": {
                 "type": "string",
                 "defaultValue": ""
+            },
+            "p_Object_Name": {
+                "type": "string"
             },
             "p_Staging_Container": {
                 "type": "string",

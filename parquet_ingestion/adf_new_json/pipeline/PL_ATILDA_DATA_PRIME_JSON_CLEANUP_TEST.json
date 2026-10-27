@@ -1,0 +1,241 @@
+{
+    "name": "PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST",
+    "properties": {
+        "description": "Removes test prime targets (*_PRIME_TEST): drops the test BRONZE table, deletes its landing files and, with p_Delete_Test_Row = true, the test EXTRACT_META row and its auto LOAD_META row. Never touches a live table.",
+        "activities": [
+            {
+                "name": "Check tables",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(length(pipeline().parameters.p_Tables), 0)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "Raise no tables",
+                            "type": "Fail",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "p_Tables is empty. List test targets, e.g. [\"<TABLE>_PRIME_TEST\"].",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "PRIME_NO_TABLES"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Loop tables",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Check tables",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@pipeline().parameters.p_Tables",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "Cleanup test target",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SnowflakeV2Source",
+                                    "query": {
+                                        "value": "EXECUTE IMMEDIATE $$\n-- 'Cleanup test target' Lookup (PL_ATILDA_DATA_PRIME_CLEANUP_TEST), run as the ADF role.\n-- Acts only on a *_PRIME_TEST name whose EXTRACT_META rows (one, or duplicates from concurrent first runs) are all\n-- inactive FILE rows with SOURCE_NAME ending in _PRIME_TEST_INITIAL_LOAD. Otherwise it changes nothing and returns\n-- ERROR. No row at all = nothing to clean (OK).\n-- Drops the test BRONZE table. With p_Delete_Test_Row = true it also deletes the test EXTRACT_META row and its\n-- auto-generated LOAD_META row (JOB_GROUP_SEQ 0); ATILDA run plans and logs are kept as history.\n-- Tokens {{...}} are replaced by tools/build_pipelines.py.\nDECLARE\n    v_status  VARCHAR DEFAULT 'ERROR';\n    msg       VARCHAR DEFAULT '';\n    v_table   VARCHAR DEFAULT UPPER(TRIM('@{replace(trim(string(item())), '''', '''''')}'));\n    n_rows    NUMBER DEFAULT 0;\n    n_ok      NUMBER DEFAULT 0;\n    v_id      NUMBER;\n    v_schema  VARCHAR;\n    v_path    VARCHAR;\n    v_tbl     VARCHAR;\n    n_lm      NUMBER DEFAULT 0;\n    res       RESULTSET;\nBEGIN\n    SELECT COUNT(*),\n           COUNT_IF(SOURCE_TYPE = 'FILE' AND ENDSWITH(UPPER(SOURCE_NAME), '_PRIME_TEST_INITIAL_LOAD')\n                    AND NOT COALESCE(ACTIVE_FLAG, FALSE)),\n           MAX(EXTRACT_META_ID), MAX(UPPER(COLLATE(TARGET_SCHEMA, ''))), MAX(COLLATE(SOURCE_PATH, ''))\n    INTO :n_rows, :n_ok, :v_id, :v_schema, :v_path\n    FROM EDP_DEV.CONTROL.EXTRACT_META WHERE UPPER(STAGE_TABLE_NAME) = :v_table;\n\n    IF (NOT ENDSWITH(v_table, '_PRIME_TEST')) THEN\n        msg := v_table || ' is not a test target (*_PRIME_TEST). Nothing changed.';\n    ELSEIF (n_rows = 0) THEN\n        v_status := 'OK';\n        msg := v_table || ': no test row; nothing to clean.';\n        v_path := NULL;\n    ELSEIF (n_ok <> n_rows) THEN\n        msg := v_table || ': all ' || n_rows || ' row(s) must be inactive test rows (FILE, *_PRIME_TEST_INITIAL_LOAD); '\n            || n_ok || ' are. Nothing changed.';\n    ELSE\n        v_tbl := 'EDP_DEV.\"' || REPLACE(v_schema, '\"', '\"\"') || '\".\"' || REPLACE(v_table, '\"', '\"\"') || '\"';\n        DROP TABLE IF EXISTS IDENTIFIER(:v_tbl);\n        msg := 'Dropped ' || v_tbl || '.';\n        IF (@{pipeline().parameters.p_Delete_Test_Row}) THEN\n            DELETE FROM EDP_DEV.CONTROL.LOAD_META\n            WHERE UPPER(TARGET_TABLE_NAME) = :v_table AND JOB_GROUP_SEQ = 0\n              AND ENDSWITH(UPPER(COLLATE(JOB_GROUP, '')), '_' || :v_table);\n            n_lm := SQLROWCOUNT;\n            DELETE FROM EDP_DEV.CONTROL.EXTRACT_META\n            WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND NOT COALESCE(ACTIVE_FLAG, FALSE)\n              AND ENDSWITH(UPPER(SOURCE_NAME), '_PRIME_TEST_INITIAL_LOAD');\n            msg := msg || ' Deleted ' || SQLROWCOUNT || ' test row(s) and ' || n_lm || ' auto LOAD_META row(s).';\n        ELSE\n            msg := msg || ' Test row ' || v_id || ' kept for the next test.';\n        END IF;\n        v_status := 'OK';\n    END IF;\n    res := (SELECT :v_status AS STATUS, :msg AS MESSAGE, :v_path AS SOURCE_PATH);\n    RETURN TABLE(res);\nEND;\n$$\n",
+                                        "type": "Expression"
+                                    },
+                                    "exportSettings": {
+                                        "type": "SnowflakeExportCopyCommand"
+                                    }
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_Snowflake_Wh",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            },
+                            "description": "Drops BRONZE.<name> and optionally the test row; only for an inactive *_PRIME_TEST row (tools/sf_cleanup_test.sql)."
+                        },
+                        {
+                            "name": "Check cleanup",
+                            "type": "IfCondition",
+                            "dependsOn": [
+                                {
+                                    "activity": "Cleanup test target",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@not(equals(activity('Cleanup test target').output.firstRow.STATUS, 'OK'))",
+                                    "type": "Expression"
+                                },
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "Raise cleanup error",
+                                        "type": "Fail",
+                                        "dependsOn": [],
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "message": {
+                                                "value": "@concat(item(), ': ', activity('Cleanup test target').output.firstRow.MESSAGE)",
+                                                "type": "Expression"
+                                            },
+                                            "errorCode": "PRIME_CLEANUP_FAILED"
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "name": "Check test folder",
+                            "type": "GetMetadata",
+                            "dependsOn": [
+                                {
+                                    "activity": "Check cleanup",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.01:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "description": "A missing SOURCE_PATH is probed as a folder that cannot exist, never the container root.",
+                            "typeProperties": {
+                                "dataset": {
+                                    "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "Folder": {
+                                            "value": "@coalesce(activity('Cleanup test target').output.firstRow.SOURCE_PATH, 'data_prime_test/__none__/')",
+                                            "type": "Expression"
+                                        },
+                                        "Container": {
+                                            "value": "@pipeline().globalParameters.StagingContainer",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                },
+                                "fieldList": [
+                                    "exists"
+                                ],
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": false
+                                },
+                                "formatSettings": {
+                                    "type": "BinaryReadSettings"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Delete test files",
+                            "type": "IfCondition",
+                            "dependsOn": [
+                                {
+                                    "activity": "Check test folder",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "expression": {
+                                    "value": "@and(not(empty(coalesce(activity('Cleanup test target').output.firstRow.SOURCE_PATH, ''))), activity('Check test folder').output.exists)",
+                                    "type": "Expression"
+                                },
+                                "ifTrueActivities": [
+                                    {
+                                        "name": "Delete test landing files",
+                                        "type": "Delete",
+                                        "dependsOn": [],
+                                        "policy": {
+                                            "timeout": "0.01:00:00",
+                                            "retry": 2,
+                                            "retryIntervalInSeconds": 30,
+                                            "secureOutput": false,
+                                            "secureInput": false
+                                        },
+                                        "userProperties": [],
+                                        "typeProperties": {
+                                            "dataset": {
+                                                "referenceName": "DS_STORAGE_V2_STAGE_BIN",
+                                                "type": "DatasetReference",
+                                                "parameters": {
+                                                    "Folder": {
+                                                        "value": "@activity('Cleanup test target').output.firstRow.SOURCE_PATH",
+                                                        "type": "Expression"
+                                                    },
+                                                    "Container": {
+                                                        "value": "@pipeline().globalParameters.StagingContainer",
+                                                        "type": "Expression"
+                                                    }
+                                                }
+                                            },
+                                            "enableLogging": false,
+                                            "storeSettings": {
+                                                "type": "AzureBlobStorageReadSettings",
+                                                "recursive": false,
+                                                "wildcardFileName": "*.json"
+                                            }
+                                        }
+                                    }
+                                ]
+                            },
+                            "description": "Removes the test landing files (SOURCE_PATH of the test row), only if the folder exists."
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_Tables": {
+                "type": "array",
+                "defaultValue": []
+            },
+            "p_Delete_Test_Row": {
+                "type": "bool",
+                "defaultValue": false
+            }
+        },
+        "variables": {},
+        "folder": {
+            "name": "ALTIDA/00 Templates/01 Extract/03 Data Prime JSON"
+        },
+        "annotations": []
+    }
+}

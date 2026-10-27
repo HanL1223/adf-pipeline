@@ -175,7 +175,7 @@
                     "source": {
                         "type": "SnowflakeV2Source",
                         "query": {
-                            "value": "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW WHERE EXTRACT_META_ID = @{pipeline().parameters.p_Initial_Meta_Id} AND CONTAINS(FILE_NAME, '_part_@{pipeline().parameters.p_Run_Id}_') ORDER BY FILE_NAME",
+                            "value": "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, OBJECT_NAME, SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW WHERE EXTRACT_META_ID = @{pipeline().parameters.p_Initial_Meta_Id} AND CONTAINS(FILE_NAME, '_part_@{pipeline().parameters.p_Run_Id}_') ORDER BY FILE_NAME",
                             "type": "Expression"
                         },
                         "exportSettings": {
@@ -283,6 +283,10 @@
                                         "value": "@pipeline().parameters.p_Batch_ID",
                                         "type": "Expression"
                                     },
+                                    "p_Object_Name": {
+                                        "value": "@item().OBJECT_NAME",
+                                        "type": "Expression"
+                                    },
                                     "p_Staging_Container": {
                                         "value": "@pipeline().parameters.p_Staging_Container",
                                         "type": "Expression"
@@ -352,6 +356,10 @@
                                     },
                                     "p_Batch_ID": {
                                         "value": "@pipeline().parameters.p_Batch_ID",
+                                        "type": "Expression"
+                                    },
+                                    "p_Object_Name": {
+                                        "value": "@item().OBJECT_NAME",
                                         "type": "Expression"
                                     },
                                     "p_Staging_Container": {

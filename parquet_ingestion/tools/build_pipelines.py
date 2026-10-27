@@ -14,14 +14,16 @@ OUT = sys.argv[1]  # parquet_ingestion folder
 # StagingContainer (cwraedevdata/staging), as every house storage reference uses; output adf_new/pipeline.
 # "old_json" = the old factory with JSON part files instead of Parquet (no Java on the SHIR; the house delta's
 # SqlServerSource -> JsonSink path), one file per batch, own pipeline names; output adf_old_json/pipeline.
+# "new_json" = the same JSON build for cwr-ae-dev-data-adf (StagingContainer global); output adf_new_json/pipeline.
 TARGET = sys.argv[2] if len(sys.argv) > 2 else "old"
-assert TARGET in ("old", "new", "old_json"), TARGET
-PIPELINE_DIR = {"old": "adf", "new": "adf_new", "old_json": "adf_old_json"}[TARGET]
-OLD_FACTORY = TARGET != "new"
+assert TARGET in ("old", "new", "old_json", "new_json"), TARGET
+PIPELINE_DIR = {"old": "adf", "new": "adf_new", "old_json": "adf_old_json", "new_json": "adf_new_json"}[TARGET]
+OLD_FACTORY = TARGET in ("old", "old_json")
 CONTAINER = ("@pipeline().parameters.p_Staging_Container" if OLD_FACTORY
              else "@pipeline().globalParameters.StagingContainer")
-JSON = TARGET == "old_json"
-SQL_DIR = os.path.join(HERE, "json") if JSON else HERE   # sf_prepare, sf_check_pair, source_query differ for JSON
+JSON = TARGET in ("old_json", "new_json")
+SQL_DIR = os.path.join(HERE, "json") if JSON else HERE   # sf_prepare, sf_check_pair, source_query differ for JSON; the
+# others (sf_begin, sf_end, sf_cleanup_test) are shared and read from tools/
 PL = "PL_ATILDA_DATA_PRIME_JSON" if JSON else "PL_ATILDA_DATA_PRIME"   # JSON pipelines sit beside the Parquet ones
 EXT = ".json" if JSON else ".parquet"
 EXTRACT = "Extract to json" if JSON else "Extract to parquet"
@@ -142,43 +144,34 @@ def load_file():
     log = lambda act, status, msg: (
         f"CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{{{plan}}}, '@{{variables('{act}')}}', "
         f"'@{{variables('{status}')}}', {msg});")
+    # ATILDA's file plan (EXTRACT_RUN_PLAN_VW): OBJECT_NAME = the landing file in SOURCE_PATH; FILE_NAME = the target path
+    # under LVL1_FOLDER_NAME (<LVL2>/<META_ID>_<PLAN_NO>/<renamed>.<ext>), which ATILDA loads. Read the one, write the
+    # other, as house DI_FILE_CSV_DFIO does. Same-format copy, because the Binary dataset (gzip, no File parameter)
+    # cannot set a file name. Parquet to Parquet needs Java on the SHIR, as the Parquet extract does.
+    fmt = "Json" if JSON else "Parquet"
+    ds_name = "DS_Storage_Stage_JSON" if JSON else "DS_Storage_Landing_Parquet"
+
+    def file_ds(folder, file):
+        return {"referenceName": ds_name, "type": "DatasetReference",
+                "parameters": {"Folder": E(f"@{p(folder)}"), "File": E(f"@{p(file)}"), "Container": E(CONTAINER)}}
     copy = {
         "name": "Copy to BLOB", "type": "Copy", "dependsOn": [], "policy": policy("0.12:00:00", 0),
         "userProperties": [],
-        "description": "Binary copy of this plan's landing file to its ATILDA staging folder (LVL1_FOLDER_NAME).",
+        "description": "Copies this plan's landing file (SOURCE_PATH/OBJECT_NAME) to the ATILDA path "
+                       "LVL1_FOLDER_NAME/FILE_NAME, which PR_CREATE_EXTRACT_ARTIFACTS loads.",
         "typeProperties": {
-            "source": {"type": "BinarySource",
-                       "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
-                                         "wildcardFileName": E(f"@{p('p_File_Name')}")},
-                       "formatSettings": {"type": "BinaryReadSettings"}},
-            "sink": {"type": "BinarySink", "storeSettings": {"type": "AzureBlobStorageWriteSettings"}},
-            "enableStaging": False},
-        "inputs": [bin_ds(f"@{p('p_Source_Path')}")],
-        "outputs": [bin_ds(f"@{p('p_Lvl1_Folder_Name')}")]}
-    if JSON:
-        # ATILDA's file plan (EXTRACT_RUN_PLAN_VW): OBJECT_NAME = the landing file in SOURCE_PATH; FILE_NAME = the target
-        # path under LVL1_FOLDER_NAME (<LVL2>/<META_ID>_<PLAN_NO>/<renamed>.json), which ATILDA loads. Read the one, write
-        # the other, as house DI_FILE_CSV_DFIO does. JSON to JSON, because the Binary dataset cannot set a file name.
-        def json_ds(folder, file):
-            return {"referenceName": "DS_Storage_Stage_JSON", "type": "DatasetReference",
-                    "parameters": {"Folder": E(f"@{p(folder)}"), "File": E(f"@{p(file)}"), "Container": E(CONTAINER)}}
-        copy.update({
-            "description": "Copies this plan's landing file (SOURCE_PATH/OBJECT_NAME) to the ATILDA path "
-                           "LVL1_FOLDER_NAME/FILE_NAME, which PR_CREATE_EXTRACT_ARTIFACTS loads.",
-            "inputs": [json_ds("p_Source_Path", "p_Object_Name")],
-            "outputs": [json_ds("p_Lvl1_Folder_Name", "p_File_Name")]})
-        copy["typeProperties"].update({
-            "source": {"type": "JsonSource",
+            "source": {"type": f"{fmt}Source",
                        "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False},
-                       "formatSettings": {"type": "JsonReadSettings"}},
-            "sink": {"type": "JsonSink", "storeSettings": {"type": "AzureBlobStorageWriteSettings"},
-                     "formatSettings": {"type": "JsonWriteSettings"}}})
+                       **({"formatSettings": {"type": "JsonReadSettings"}} if JSON else {})},
+            "sink": {"type": f"{fmt}Sink", "storeSettings": {"type": "AzureBlobStorageWriteSettings"},
+                     "formatSettings": {"type": f"{fmt}WriteSettings"}},
+            "enableStaging": False},
+        "inputs": [file_ds("p_Source_Path", "p_Object_Name")],
+        "outputs": [file_ds("p_Lvl1_Folder_Name", "p_File_Name")]}
     acts = [
         # A blank p_Batch_ID can arrive as a JSON null through ExecutePipeline; equals(null, '') is false and coalesce
         # passes the null through, so SET BATCH ID ran replace() on null. empty() is true for null and ''.
-        # Fixed for JSON only so far; TODO apply to old/new too (handover section 9).
-        if_("If BATCH ID exists",
-            f"@empty({p('p_Batch_ID')})" if JSON else f"@equals({p('p_Batch_ID')}, '')", false=[
+        if_("If BATCH ID exists", f"@empty({p('p_Batch_ID')})", false=[
             sf_lookup("SET BATCH ID",
                       f"CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{{{plan}}}, '@{{variables('vConst_Batch_Id')}}', "
                       f"'@{{{esc(p('p_Batch_ID'))}}}', 'Successful');", retry=2)]),
@@ -210,7 +203,7 @@ def load_file():
         {"p_Extract_Run_Plan_Id": sp("string"), "p_Extract_Meta_Id": sp("string"), "p_File_Name": sp("string"),
          "p_Source_Path": sp("string"), "p_Lvl1_Folder_Name": sp("string"),
          "p_Source_Extract_Status": sp("string", ""), "p_Batch_ID": sp("string", ""),
-         **({"p_Object_Name": sp("string")} if JSON else {}), **container_param()},
+         "p_Object_Name": sp("string"), **container_param()},
         {"vConst_Complete": const("COMPLETED"), "vConst_Fail": const("FAILED"),
          "vConst_BlobCopy_Status": const("source_extract_status"),
          "vConst_Run_Status": const("extract_run_plan_status"), "vConst_Batch_Id": const("batch_id")},
@@ -230,7 +223,7 @@ def data_out():
         "p_Lvl1_Folder_Name": "@item().LVL1_FOLDER_NAME",
         "p_Source_Extract_Status": "@coalesce(item().SOURCE_EXTRACT_STATUS, '')",
         "p_Batch_ID": f"@{p('p_Batch_ID')}",
-        **({"p_Object_Name": "@item().OBJECT_NAME"} if JSON else {}), **container_arg()}
+        "p_Object_Name": "@item().OBJECT_NAME", **container_arg()}
     acts = [
         {"name": "Get File Metadata", "type": "GetMetadata", "dependsOn": [], "policy": policy("0.01:00:00", 2),
          "userProperties": [],
@@ -254,8 +247,7 @@ def data_out():
                             f"CALL CONTROL.PR_CREATE_EXTRACT_RUN_PLAN_FILE('@{{{esc(p('p_Initial_Source_Name'))}}}', "
                             f"'@{{{esc(p('p_Source_Path'))}}}', $$@{{string({files})}}$$, '0', '0');")]),
         sf_lookup("Get run plan",
-                  "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, "
-                  + ("OBJECT_NAME, " if JSON else "") +
+                  "SELECT EXTRACT_RUN_PLAN_ID, EXTRACT_META_ID, FILE_NAME, SOURCE_PATH, LVL1_FOLDER_NAME, OBJECT_NAME, "
                   "SOURCE_EXTRACT_STATUS FROM CONTROL.EXTRACT_RUN_PLAN_VW "
                   f"WHERE EXTRACT_META_ID = @{{{p('p_Initial_Meta_Id')}}} "
                   f"AND CONTAINS(FILE_NAME, '_part_@{{{p('p_Run_Id')}}}_') ORDER BY FILE_NAME",
@@ -607,8 +599,8 @@ def main():
         with open(os.path.join(OUT, PIPELINE_DIR, "pipeline", pl["name"] + ".json"), "w") as f:
             json.dump(pl, f, indent=4)
             f.write("\n")
-    if TARGET == "new":
-        return  # the Parquet sql/10 is factory-independent; the old target writes it
+    if not OLD_FACTORY:
+        return  # sql/10 is factory-independent; the old and old_json targets write it
     test = tsql
     for k, v in {"__OBJ__": "dbo.ProductNetworkCostsHistory", "__WCOL__": "RefreshDatetime",
                  "__WS__": "2025-10-01", "__WE__": "", "__PCOL__": "HistoryID",
