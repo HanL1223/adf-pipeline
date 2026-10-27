@@ -248,17 +248,13 @@ def data_out():
                        f"@concat('ATILDA planned ', string(length({plans})), ' of ', string(length({files})), "
                        f"' files for run ', {p('p_Run_Id')}, '. Check CONTROL.EXTRACT_RUN_PLAN_STATUS_VW.')",
                        "PRIME_PLAN_COUNT_MISMATCH")]),
-        {"name": "Load first file", "type": "ForEach", "dependsOn": dep(("Check plan count", "Succeeded")),
+        # One plan at a time, as the house file pipelines (TPL_E_FILE_PARQUET, DI_FILE_CSV_DFIO) do:
+        # PR_CREATE_EXTRACT_ARTIFACTS also processes the row's other open plans, so concurrent calls could load one
+        # staged file twice. Sequential also lets the first file create the BRONZE table alone.
+        {"name": "Load files", "type": "ForEach", "dependsOn": dep(("Check plan count", "Succeeded")),
          "userProperties": [],
-         "description": "Loads one file alone first, so DLA creates the BRONZE table once.",
-         "typeProperties": {"items": E(f"@take({plans}, 1)"), "isSequential": True, "activities": [
+         "typeProperties": {"items": E(f"@{plans}"), "isSequential": True, "activities": [
              exec_pl("Load file", "PL_ATILDA_DATA_PRIME_LOAD_FILE", load_params)]}},
-        {"name": "Load other files", "type": "ForEach", "dependsOn": dep(("Load first file", "Succeeded")),
-         "userProperties": [],
-         "description": "Files hold disjoint rows (PARALLEL_STAGE_LOAD_FLAG = TRUE), so they load in parallel.",
-         "typeProperties": {"items": E(f"@skip({plans}, 1)"), "isSequential": False, "batchCount": 4,
-                            "activities": [
-                                exec_pl("Load other file", "PL_ATILDA_DATA_PRIME_LOAD_FILE", load_params)]}},
     ]
     return pipeline(
         "PL_ATILDA_DATA_PRIME_OUT",

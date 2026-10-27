@@ -36,7 +36,7 @@ x AS (
            t.src_set, t.ends_test, COLLATE(i.RUN_GROUP, '') AS i_group,
            i.EXTRACT_META_ID AS i_id, COLLATE(i.SOURCE_NAME, '') AS i_source, COLLATE(i.SOURCE_PATH, '') AS i_path,
            COLLATE(i.OBJECT_NAME, '') AS i_object,
-           COLLATE(i.SQL_STATEMENT, '') AS i_sqlstmt, COALESCE(i.PARALLEL_STAGE_LOAD_FLAG, FALSE) AS i_parallel,
+           COLLATE(i.SQL_STATEMENT, '') AS i_sqlstmt,
            COALESCE(i.ACTIVE_FLAG, FALSE) AS i_active, COLLATE(i.TARGET_SCHEMA, '') AS tschema, COLLATE(i.STAGE_TABLE_NAME, '') AS stage,
            d.EXTRACT_META_ID AS d_id, COLLATE(d.SOURCE_NAME, '') AS d_source, COLLATE(d.OBJECT_NAME, '') AS d_object,
            COALESCE(d.ACTIVE_FLAG, FALSE) AS d_active, NULLIF(TRIM(COLLATE(d.SQL_SNIPPET, '')), '') AS d_snippet
@@ -63,7 +63,6 @@ SELECT
                           || '''; it must be NULL (1=1 deletes BRONZE before every file). Re-run with p_Prepare_Live_Row = true.'
         WHEN UPPER(COALESCE(i_group, '')) <> 'DATA_PRIME' THEN 'Initial row ' || i_id || ' RUN_GROUP is '
                           || COALESCE(i_group, 'NULL') || '; it must be DATA_PRIME so no trigger runs it. Re-run with p_Prepare_Live_Row = true.'
-        WHEN NOT i_parallel THEN 'Initial row ' || i_id || ' needs PARALLEL_STAGE_LOAD_FLAG = TRUE. Re-run with p_Prepare_Live_Row = true.'
         WHEN NULLIF(TRIM(i_path), '') IS NULL THEN 'Initial row ' || i_id || ' has no SOURCE_PATH.'
         WHEN i_object IS NULL OR NOT ENDSWITH(LOWER(i_object), '_part_%.json') OR LENGTH(i_object) <= 12
              OR CONTAINS(LEFT(i_object, LENGTH(i_object) - 12), '%')

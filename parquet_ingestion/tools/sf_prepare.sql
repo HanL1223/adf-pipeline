@@ -6,8 +6,7 @@ EXECUTE IMMEDIATE $$
 -- 'Prepare row' Lookup: the setup DML, run as the ADF role (which holds CONTROL_DEV_RW), before 'Check pair'.
 --   Test  (source_from set, table = <source_from>_PRIME_TEST): create the test INITIAL_LOAD row from the live delta
 --         twin if it does not exist yet. New, inactive, separate row; nothing existing changes.
---   Live  (no source_from): the live INITIAL_LOAD row must have SQL_STATEMENT NULL, PARALLEL_STAGE_LOAD_FLAG TRUE and
---         RUN_GROUP DATA_PRIME. With p_Prepare_Live_Row = true, fix that one row (or create it if the table has
+--   Live  (no source_from): the live INITIAL_LOAD row must have SQL_STATEMENT NULL and RUN_GROUP DATA_PRIME. With p_Prepare_Live_Row = true, fix that one row (or create it if the table has
 --         none); the old values are returned in OLD_VALUES (the ADF run output is the backup). Otherwise stop and
 --         say exactly what would change.
 --         If the table has no JSON initial row but exactly one Parquet INITIAL_LOAD row (an earlier Parquet onboarding),
@@ -72,7 +71,7 @@ BEGIN
                        'FILE', LOWER(SPLIT_PART(COLLATE(d.OBJECT_NAME, ''), '.', -1)) || '_part_%.json', 'APPEND',
                        d.PRIMARY_KEYS, NULL, 'DATA_PRIME', d.LVL2_FOLDER_NAME || '_PRIME_TEST', d.LANDING_SCHEMA,
                        d.TARGET_SCHEMA, :v_table, FALSE, NULL, :v_path, FALSE, FALSE, NULL, NULL,
-                       COALESCE(d.SCHEMA_DRIFT_CODE, 2), TRUE
+                       COALESCE(d.SCHEMA_DRIFT_CODE, 2), FALSE
                 FROM EDP_DEV.CONTROL.EXTRACT_META d
                 WHERE UPPER(d.STAGE_TABLE_NAME) = :v_src AND d.SOURCE_TYPE = 'TABLE'
                   AND NOT EXISTS (SELECT 1 FROM EDP_DEV.CONTROL.EXTRACT_META x WHERE UPPER(x.STAGE_TABLE_NAME) = :v_table);
@@ -102,11 +101,9 @@ BEGIN
           AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
         IF (n_init = 1) THEN
             SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'SQL_STATEMENT', SQL_STATEMENT,
-                                              'PARALLEL_STAGE_LOAD_FLAG', PARALLEL_STAGE_LOAD_FLAG,
                                               'RUN_GROUP', RUN_GROUP, 'ACTIVE_FLAG', ACTIVE_FLAG)),
                    COALESCE(ACTIVE_FLAG, FALSE),
-                   (SQL_STATEMENT IS NOT NULL OR NOT COALESCE(PARALLEL_STAGE_LOAD_FLAG, FALSE)
-                    OR UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) <> 'DATA_PRIME')
+                   (SQL_STATEMENT IS NOT NULL OR UPPER(COALESCE(COLLATE(RUN_GROUP, ''), '')) <> 'DATA_PRIME')
             INTO :v_old, :v_active, :v_needs
             FROM EDP_DEV.CONTROL.EXTRACT_META WHERE EXTRACT_META_ID = :v_id;
             IF (NOT v_needs) THEN
@@ -115,7 +112,7 @@ BEGIN
             ELSEIF (NOT {{PREPARE_LIVE}}) THEN
                 v_status := 'ERROR';
                 v_action := 'LIVE_ROW_NEEDS_PREPARE';
-                msg := 'Initial row ' || v_id || ' needs SQL_STATEMENT NULL, PARALLEL_STAGE_LOAD_FLAG TRUE and RUN_GROUP '
+                msg := 'Initial row ' || v_id || ' needs SQL_STATEMENT NULL and RUN_GROUP '
                     || 'DATA_PRIME (now ' || v_old || '). Nothing changed. Re-run with p_Prepare_Live_Row = true '
                     || 'to apply; the old values are recorded in this output.';
             ELSEIF (v_active) THEN
@@ -123,7 +120,7 @@ BEGIN
                 msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed.';
             ELSE
                 UPDATE EDP_DEV.CONTROL.EXTRACT_META
-                SET SQL_STATEMENT = NULL, PARALLEL_STAGE_LOAD_FLAG = TRUE, RUN_GROUP = 'DATA_PRIME'
+                SET SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME'
                 WHERE EXTRACT_META_ID = :v_id AND COALESCE(ACTIVE_FLAG, FALSE) = FALSE;
                 IF (SQLROWCOUNT = 0) THEN
                     v_status := 'ERROR';
@@ -147,7 +144,6 @@ BEGIN
                 SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'OBJECT_NAME', OBJECT_NAME,
                                                   'STAGE_FILE_TYPE', STAGE_FILE_TYPE, 'STAGE_FILE_SPEC', STAGE_FILE_SPEC,
                                                   'SCHEMA_DRIFT_CODE', SCHEMA_DRIFT_CODE, 'SQL_STATEMENT', SQL_STATEMENT,
-                                                  'PARALLEL_STAGE_LOAD_FLAG', PARALLEL_STAGE_LOAD_FLAG,
                                                   'RUN_GROUP', RUN_GROUP, 'ACTIVE_FLAG', ACTIVE_FLAG)),
                        COALESCE(ACTIVE_FLAG, FALSE)
                 INTO :v_old, :v_active
@@ -157,7 +153,7 @@ BEGIN
                     v_action := 'LIVE_ROW_NEEDS_CONVERT';
                     msg := 'Initial row ' || v_id || ' is a Parquet row (now ' || v_old || '). The JSON prime needs it '
                         || 'converted to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, '
-                        || 'SCHEMA_DRIFT_CODE from the delta twin, SQL_STATEMENT NULL, PARALLEL_STAGE_LOAD_FLAG TRUE, '
+                        || 'SCHEMA_DRIFT_CODE from the delta twin, SQL_STATEMENT NULL, '
                         || 'RUN_GROUP DATA_PRIME). Nothing changed. Re-run with p_Prepare_Live_Row = true to apply; '
                         || 'the old values are recorded in this output.';
                 ELSEIF (n_delta <> 1) THEN
@@ -170,7 +166,7 @@ BEGIN
                 ELSE
                     UPDATE EDP_DEV.CONTROL.EXTRACT_META m
                     SET OBJECT_NAME = d.OBJ, STAGE_FILE_TYPE = NULL, STAGE_FILE_SPEC = NULL, SCHEMA_DRIFT_CODE = d.SDC,
-                        SQL_STATEMENT = NULL, PARALLEL_STAGE_LOAD_FLAG = TRUE, RUN_GROUP = 'DATA_PRIME'
+                        SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME'
                     FROM (SELECT LOWER(SPLIT_PART(COLLATE(OBJECT_NAME, ''), '.', -1)) || '_part_%.json' AS OBJ,
                                  COALESCE(SCHEMA_DRIFT_CODE, 2) AS SDC
                           FROM EDP_DEV.CONTROL.EXTRACT_META
@@ -207,7 +203,7 @@ BEGIN
                        'FILE', LOWER(SPLIT_PART(COLLATE(d.OBJECT_NAME, ''), '.', -1)) || '_part_%.json', 'APPEND',
                        d.PRIMARY_KEYS, NULL, 'DATA_PRIME', d.LVL2_FOLDER_NAME, d.LANDING_SCHEMA, d.TARGET_SCHEMA,
                        d.STAGE_TABLE_NAME, FALSE, NULL, :v_path, FALSE, FALSE, NULL, NULL,
-                       COALESCE(d.SCHEMA_DRIFT_CODE, 2), TRUE
+                       COALESCE(d.SCHEMA_DRIFT_CODE, 2), FALSE
                 FROM EDP_DEV.CONTROL.EXTRACT_META d
                 WHERE UPPER(d.STAGE_TABLE_NAME) = :v_table AND d.SOURCE_TYPE = 'TABLE'
                   AND NOT EXISTS (SELECT 1 FROM EDP_DEV.CONTROL.EXTRACT_META x

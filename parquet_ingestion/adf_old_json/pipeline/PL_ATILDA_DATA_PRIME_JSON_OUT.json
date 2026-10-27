@@ -224,7 +224,7 @@
                 }
             },
             {
-                "name": "Load first file",
+                "name": "Load files",
                 "type": "ForEach",
                 "dependsOn": [
                     {
@@ -235,91 +235,15 @@
                     }
                 ],
                 "userProperties": [],
-                "description": "Loads one file alone first, so DLA creates the BRONZE table once.",
                 "typeProperties": {
                     "items": {
-                        "value": "@take(activity('Get run plan').output.value, 1)",
+                        "value": "@activity('Get run plan').output.value",
                         "type": "Expression"
                     },
                     "isSequential": true,
                     "activities": [
                         {
                             "name": "Load file",
-                            "type": "ExecutePipeline",
-                            "dependsOn": [],
-                            "userProperties": [],
-                            "typeProperties": {
-                                "pipeline": {
-                                    "referenceName": "PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE",
-                                    "type": "PipelineReference"
-                                },
-                                "waitOnCompletion": true,
-                                "parameters": {
-                                    "p_Extract_Run_Plan_Id": {
-                                        "value": "@string(item().EXTRACT_RUN_PLAN_ID)",
-                                        "type": "Expression"
-                                    },
-                                    "p_Extract_Meta_Id": {
-                                        "value": "@string(item().EXTRACT_META_ID)",
-                                        "type": "Expression"
-                                    },
-                                    "p_File_Name": {
-                                        "value": "@item().FILE_NAME",
-                                        "type": "Expression"
-                                    },
-                                    "p_Source_Path": {
-                                        "value": "@item().SOURCE_PATH",
-                                        "type": "Expression"
-                                    },
-                                    "p_Lvl1_Folder_Name": {
-                                        "value": "@item().LVL1_FOLDER_NAME",
-                                        "type": "Expression"
-                                    },
-                                    "p_Source_Extract_Status": {
-                                        "value": "@coalesce(item().SOURCE_EXTRACT_STATUS, '')",
-                                        "type": "Expression"
-                                    },
-                                    "p_Batch_ID": {
-                                        "value": "@pipeline().parameters.p_Batch_ID",
-                                        "type": "Expression"
-                                    },
-                                    "p_Object_Name": {
-                                        "value": "@item().OBJECT_NAME",
-                                        "type": "Expression"
-                                    },
-                                    "p_Staging_Container": {
-                                        "value": "@pipeline().parameters.p_Staging_Container",
-                                        "type": "Expression"
-                                    }
-                                }
-                            }
-                        }
-                    ]
-                }
-            },
-            {
-                "name": "Load other files",
-                "type": "ForEach",
-                "dependsOn": [
-                    {
-                        "activity": "Load first file",
-                        "dependencyConditions": [
-                            "Succeeded"
-                        ]
-                    }
-                ],
-                "userProperties": [],
-                "description": "Files hold disjoint rows (PARALLEL_STAGE_LOAD_FLAG = TRUE), so they load in parallel.",
-                "typeProperties": {
-                    "items": {
-                        "value": "@skip(activity('Get run plan').output.value, 1)",
-                        "type": "Expression"
-                    },
-                    "isSequential": false,
-                    "batchCount": 4,
-                    "activities": [
-                        {
-                            "name": "Load other file",
                             "type": "ExecutePipeline",
                             "dependsOn": [],
                             "userProperties": [],

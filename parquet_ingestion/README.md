@@ -1,9 +1,7 @@
 # Data priming: SQL Server → JSON → ATILDA → BRONZE
 
-This is the run guide, current as of 2026-10-27. **It replaces README.md.docx, handover.md.docx, adf_old_json/README.md.docx and LIVE_PRIME_JSON.md.**
-
-- The design reasoning in DESIGN.md.docx sections 4–9 still holds: the pair, test mode, the lock, Begin/End, the handover.
-- Where DESIGN describes Parquet, section 13 (JSON) and this file take precedence.
+This is the run guide, current as of 2026-10-27. **It replaces README.md.docx, handover.md.docx and adf_old_json/README.md.docx.**
+DESIGN.md.docx sections 4–9 still describe the design: the pair, test mode, the lock, Begin/End and the handover. Where DESIGN describes Parquet, section 13 (JSON) and this file take precedence.
 
 The pipeline is a one-click ADF run that initial-loads ("primes") SQL Server tables into EDP_DEV.BRONZE through ATILDA, then hands each table over to its delta feed without a gap.
 
@@ -11,13 +9,13 @@ The pipeline is a one-click ADF run that initial-loads ("primes") SQL Server tab
 
 | Path | What it is |
 |---|---|
-| adf_old_json/pipeline/ | The 5 pipelines for the old factory **cwr-ase-edp-dev-adf** (container = parameter p_Staging_Container, default snowflake-data). Proven: test run 4 passed |
-| adf_new_json/pipeline/ | The same 5 pipelines for **cwr-ae-dev-data-adf** (container = global StagingContainer). Blocked until the gate in section 3 passes |
+| adf_old_json/pipeline/ | The 5 pipelines for the old factory **cwr-ase-edp-dev-adf**. The container is the parameter p_Staging_Container (default snowflake-data). Proven by test run 4 |
+| adf_new_json/pipeline/ | The same 5 pipelines for **cwr-ae-dev-data-adf**. The container is the global StagingContainer. Blocked until the section 3 gate passes |
 | tools/build_pipelines.py | Generates both builds and sql/10. **Never hand-edit the pipeline JSON** |
 | tools/source_query.tsql | 'Get source columns': validates the source, builds SOURCE_QUERY and RANGES_SQL |
-| tools/sf_prepare.sql | 'Prepare row': creates the test row; creates or converts the live initial row only with p_Prepare_Live_Row |
+| tools/sf_prepare.sql | 'Prepare row': creates the test row. Creates or converts the live initial row only with p_Prepare_Live_Row |
 | tools/sf_check_pair.sql | 'Check pair': read-only validation of the INITIAL_LOAD / delta pair |
-| tools/sf_begin.sql, sf_end.sql | Lock, delta OFF, truncate / reconcile, delta ON only if safe |
+| tools/sf_begin.sql, sf_end.sql | Begin: lock, delta OFF, truncate. End: reconcile, then delta ON only if safe |
 | tools/sf_cleanup_test.sql | Cleanup of *_PRIME_TEST targets |
 | tools/check.py | Static checker for the generated JSON |
 | sql/01_grants.sql | Read-only grant checks for the ADF role |
@@ -32,58 +30,75 @@ python3 tools/build_pipelines.py . old && python3 tools/check.py adf_old_json/pi
 python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pipeline   # cwr-ae-dev-data-adf
 ```
 
-The pipelines are PL_ATILDA_DATA_PRIME_JSON (the entry point you run) plus _JSON_IN, _JSON_OUT, _JSON_LOAD_FILE and _JSON_CLEANUP_TEST. They live in the ADF folder `ALTIDA/00 Templates/01 Extract/03 Data Prime JSON` (children in `/Child`).
+### How a run flows
+
+The entry point is PL_ATILDA_DATA_PRIME_JSON. It runs per object, 2 objects at a time:
+
+```
+Prepare row ─ Check pair ─ Get source columns ─ Get batch ranges          (read-only, except Prepare's opt-in row setup)
+  └ Begin prime: lock the initial row, abandon its old open plans, delta OFF, TRUNCATE BRONZE
+      └ Data in  (_JSON_IN):  SQL Server ─SHIR─> one gzip JSON file per key-range batch (4 batches at a time)
+      └ Data out (_JSON_OUT): list this run's files → PR_CREATE_EXTRACT_RUN_PLAN_FILE (one plan per file)
+                              → one file at a time (_JSON_LOAD_FILE): Copy to BLOB → PR_CREATE_EXTRACT_ARTIFACTS → COMPLETED
+      └ End prime: reconcile rows (total, per batch, other rows, duplicate keys, late delta plans), release lock,
+                   delta ON only on a pass with a usable watermark
+  on any failure after Begin: Abort prime (lock released, delta stays OFF) → Fail
+```
+
+Data out is the house file flow (TPL_E_FILE_PARQUET / DI_FILE_CSV_DFIO), including its **one-plan-at-a-time** loop.
+
+### Where it deliberately differs from Altida_Skill.md
+
+| Skill | Here | Why |
+|---|---|---|
+| Section 10.3 runs the DLA master pipeline for RUN_GROUP INITIAL | Calls PR_CREATE_EXTRACT_RUN_PLAN_FILE / PR_CREATE_EXTRACT_ARTIFACTS directly. The initial row uses RUN_GROUP **DATA_PRIME**, which no trigger runs | The prime selects rows by id. Nothing else picks up a row while the prime holds it ACTIVE |
+| Recipe B: STAGE_FILE_TYPE PARQUET, SCHEMA_DRIFT_CODE 0, SQL_STATEMENT 1=1 | STAGE_FILE_TYPE/SPEC **NULL (JSON)**, SCHEMA_DRIFT_CODE copied from the delta (2), SQL_STATEMENT **NULL** | JSON is the RDBMS convention (section 3). 1=1 is not applied to FILE rows anyway (section 3), and Begin truncates BRONZE explicitly |
+| Section 2: back up to EXTRACT_META_BKP_* before an UPDATE; OPS_DEV writes | Prepare returns the old values in its output (OLD_VALUES). All CONTROL DML runs as the ADF role (CONTROL_DEV_RW) | No new objects in CONTROL. OPS_DEV cannot write CONTROL in DEV |
+| Section 8: abandon a plan with etlplan_status | Begin also logs extract_run_plan_status = ABANDONED | EXTRACT_RUN_PLAN_VW keeps a plan open until that status changes (test run 4) |
 
 ## 1. Why JSON (the Parquet build is retired)
 
-**Performance is about the same, so JSON wins on the other points.**
+| Stage | Parquet | JSON |
+|---|---|---|
+| Extract on the SHIR | Needs 64-bit **Java** on the SHIR, which it does not have (JreNotFound) | No Java. The path the delta already uses. About 2–4x more bytes before gzip, which costs minutes, not hours |
+| Snowflake load | Slightly faster per byte | Slightly slower per byte |
+| **Per-file ATILDA work** (plan, copy, provision, load, logs) | Same | Same. **This dominates run time** and depends only on the number of files |
+| BRONZE text | Typed CONVERTs, which can differ from the delta's text | Identical to the delta's text |
 
-| Stage | Parquet | JSON | Difference |
-|---|---|---|---|
-| Extract on the SHIR | Columnar + snappy. Needs 64-bit **Java** on the SHIR, which it does not have (JreNotFound). Staged copy does not help, because the sink runs on the SHIR | gzip, about 2–4x more bytes before compression. No Java. The same path the delta uses | Minutes on a multi-million-row table. The upload is somewhat larger |
-| Copy to BLOB (landing → ATILDA path) | Re-serialised Parquet to Parquet (Java again) | Re-serialised JSON to JSON | Same order |
-| Snowflake load (PR_CREATE_EXTRACT_ARTIFACTS) | Faster per byte | Slower per byte | Seconds to minutes per file on DEV_DATA_LOAD_WH |
-| **Per-file ATILDA overhead** (plan, copy, provision, load, log calls) | Same | Same | **This dominates.** It depends on the number of files, not the format |
-| BRONZE text | Typed CONVERTs, so it can differ from the delta's text | Identical to the delta's text (same SELECT *, same sink) | JSON keeps the primed and delta rows consistent |
-
-The 5-hour test run (2024-07-01 to 2026-10-26) is explained by the file count, not the format: at `p_Rows_Per_File = 50000` it made dozens of files. See open item A. The default is now **1,000,000** rows per file.
+**Run time is driven by the number of files.** Files load one at a time, at roughly 2–5 minutes each.
+- 20 files ≈ 1–1.5 hours, plus the extract.
+- The 2024-07-01 to 2026-10-26 test at 50,000 rows per file made dozens of files.
+- The default is now **1,000,000 rows per file**. Aim for **10–50 files**.
 
 ## 2. Can I run only "Data out"?
 
-**No.** Always run the entry pipeline, PL_ATILDA_DATA_PRIME_JSON. Data out cannot stand on its own:
+**Not for priming.** _JSON_OUT is a child pipeline: you could start it by hand with its parameters, but it is not a safe step on its own.
 
-1. **It only sees one row's files from one run.** It lists `<SOURCE_PATH>/<prefix>_part_<RunId>_*.json` for the initial row it is given. Files from the test run belong to test row 790, in `data_prime_test/...`, under another RunId. The live row 768 has its own path and id, so nothing would be planned.
-2. **The safety steps are in the parent.** Without Prepare, Check pair, Begin and End, nothing would:
-   - convert row 768 to JSON;
-   - take the lock;
-   - turn delta 156 OFF;
-   - truncate the live BRONZE table, which still holds the delta's data, so a load would append and duplicate;
-   - reconcile the rows, or turn the delta back ON.
-3. **End needs Data in's per-batch row counts** (batch_rows) to reconcile. Without them a lost or duplicated file goes unnoticed.
-4. **The window must be the live one.** The live prime takes the full history up to the source server's clock. That end bound is the delta's gap-free handover point (DESIGN section 8). The test's fixed window is not.
+1. **It loads only the files you point it at.** It lists `<p_Source_Path>/<p_File_Prefix>_part_<p_Run_Id>_*.json` and plans them on the initial row named by p_Initial_Source_Name / p_Initial_Meta_Id.
+   - The test run's files are in test row 790's folder, carry the test RunId, and hold **only the test window**.
+   - Pointed at live row 768, Data out finds nothing in 768's folder. Pointing it at the test folder would load the wrong period through the wrong row.
+2. **The parent's steps around it are what make it safe.**
+   - **Prepare** converts 768 to JSON. Without this, ATILDA treats the files as Parquet and the load fails.
+   - **Begin** locks the row, turns delta 156 **OFF** and **truncates** the live BRONZE table. Without it the files append onto the delta's rows (duplicates), and the delta keeps running.
+   - **End** reconciles the rows against what was extracted and turns the delta back ON only if they match.
+3. **End needs Data in's per-batch row counts** (batch_rows). Data out alone has no rows to reconcile against.
 
-If a live run fails during Data out, re-run the whole prime. It re-extracts, truncates again and reloads.
-
-A "resume from Data out" mode is possible later. It would need two things proven first:
-- whether ATILDA re-plans a file name it planned before (RELOAD_SAME_FILE_FLAG is FALSE);
-- a place to keep batch_rows between runs.
-
-Ask for it if the Data in phase turns out to be the slow part.
+**If a live run fails partway, re-run the whole prime.** It re-extracts, truncates and reloads. Failed plans from the earlier attempt are abandoned by Begin. Resuming from Data out is not supported.
 
 ## 3. Which factory
 
 | Factory | Build | Status |
 |---|---|---|
-| cwr-ase-edp-dev-adf (old) | adf_old_json | **Works** (test run 4 passed: 163,204 rows, reconcile OK) |
+| cwr-ase-edp-dev-adf (old) | adf_old_json | **Works** (test run 4: 163,204 rows, reconcile OK) |
 | cwr-ae-dev-data-adf (new) | adf_new_json | **Blocked** until G1–G3 pass. Then test there first |
 
 Gate for the new factory:
 
 | Check | How | Pass when |
 |---|---|---|
-| G1 ATILDA reads the new account | `SELECT * FROM EDP_DEV.CONTROL.STORAGE_DETAILS;` and `DESC STORAGE INTEGRATION EDP_AZURE_SI_DEV;` | Both include `azure://cwraedevdata.blob.core.windows.net/staging/` (on 2026-10-27 only cwraseedpdevst/snowflake-data). Ask the ATILDA owners how a FILE row picks its location |
-| G2 Storage rights | cwraedevdata → Access control | The factory identity can write and delete blobs (Storage Blob Data Contributor) |
-| G3 Source DB | `SourceConfig.STOCKDB` in data-factory/factory/cwr-ae-dev-data-adf.json | It is the DB you mean (192.168.29.58 / STOCKDB). The old factory used a test DB |
+| G1 ATILDA reads the new account | `SELECT * FROM EDP_DEV.CONTROL.STORAGE_DETAILS;` and `DESC STORAGE INTEGRATION EDP_AZURE_SI_DEV;` | Both include `azure://cwraedevdata.blob.core.windows.net/staging/` (on 2026-10-27 only cwraseedpdevst/snowflake-data). The ATILDA owners change this; ask them how a FILE row picks its location |
+| G2 Storage rights | cwraedevdata → Access control (IAM) | The factory identity has Storage Blob Data Contributor |
+| G3 Source DB | `SourceConfig.STOCKDB` in data-factory/factory/cwr-ae-dev-data-adf.json | It is the DB you intend (192.168.29.58 / STOCKDB). The old factory used a test DB |
 | G4 Snowflake role | linked service cw_au_edp_snowflake_wh | DEV_ACCOUNT_ROLE_DATA_INGESTION (true in the repo) |
 | G5 Datasets | DS_Storage_Stage_JSON (Folder, File, Container; gzip), DS_STORAGE_V2_STAGE_BIN, DS_SQLServer_Shared, DS_Snowflake_Wh | They exist (true in the repo) |
 
@@ -91,69 +106,93 @@ Gate for the new factory:
 
 ## 4. Prime DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY (live), step by step
 
-The table pair:
-- delta twin **156**: STOCKDB, `dbo.ProductNetworkCostsHistory`, PK HistoryID, watermark RefreshDatetime, SCMergeCO;
-- live initial row **768**: still a Parquet row; the prime converts it;
-- test row **790**.
+### What changes in ATILDA (CONTROL), and who changes it
+
+| Object | Before | During | After a pass | Changed by |
+|---|---|---|---|---|
+| EXTRACT_META 156 (delta, STOCKDB, SCMergeCO) | ACTIVE TRUE | **FALSE** (from Begin) | **TRUE** (End; only with p_Enable_Delta true and a usable watermark) | Pipeline |
+| EXTRACT_META 768 (initial row) | Parquet: OBJECT_NAME `…_part_%.parquet`, STAGE_FILE_TYPE PARQUET + spec, SCHEMA_DRIFT_CODE 0, SQL_STATEMENT 1=1, RUN_GROUP INITIAL | Converted once (Prepare, p_Prepare_Live_Row = true): `productnetworkcostshistory_part_%.json`, STAGE_FILE_TYPE/SPEC NULL, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME. ACTIVE TRUE while running (the lock) | ACTIVE FALSE; stays JSON. Id, SOURCE_NAME, SOURCE_PATH, LVL2, PRIMARY_KEYS unchanged | Pipeline |
+| EXTRACT_RUN_PLAN / logs for 768 | Any open old plans | Begin abandons the old open plans. One new plan per file | All of this run's plans COMPLETED | Pipeline + ATILDA procs |
+| LOAD_META for 768 (auto, JOB_GROUP_SEQ 0, APPEND; skill: id 192) | Exists | Used as is | Unchanged | Nobody. ATILDA creates it if missing |
+| BRONZE.DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY | Delta rows | **Truncated** (Begin), then loaded file by file | Full history up to the end bound. The typed _VW is kept by the delta row | Pipeline + ATILDA |
+| STORAGE_DETAILS / EDP_AZURE_SI_DEV | — | — | — | ATILDA owners. **New factory only** (gate G1) |
+
+Nothing in CONTROL is edited by hand. If you ever need to undo the 768 conversion, a CONTROL_DEV_RW holder restores the OLD_VALUES from step 5, with sign-off.
 
 ### Step 1. Close out the running test (old factory)
 
 1. **Let it finish.** A cancelled run leaves 790 ACTIVE, so the next run would need `p_Force = true`.
-2. **Record End prime's output:** STATUS, ROWS_COPIED, BRONZE_ROWS, BATCH_MISMATCH.
-3. **Record from ADF Monitor:**
-   - the Data in and Data out durations;
-   - the number of _JSON_LOAD_FILE runs;
-   - for one early and one late file, the "Copy to BLOB" and "Provision SI artifacts and load data" durations.
-4. **Open item A:** for an early and a late plan id of this run, run
-   `SELECT * FROM EDP_DEV.CONTROL.EXTRACT_RUN_LOG WHERE EXTRACT_RUN_PLAN_ID = <id> ORDER BY 1;`
-   Many provision/load entries on an early plan means each call reprocesses every open plan.
-5. **Test checks.** Use a role that can read the test table.
+2. **From End prime's output, record** STATUS, ROWS_COPIED, BRONZE_ROWS and BATCH_MISMATCH.
+   - That run still loaded files 4 at a time. If End reports BRONZE_ROWS > ROWS_COPIED or a batch mismatch, that is the double-load which the new one-at-a-time loop prevents.
+3. **Time per file.** In ADF Monitor, note the Data in and Data out durations and the number of _JSON_LOAD_FILE runs.
+4. **Test checks.** Use a role that can read the test table.
    - **Columns.** This must return no rows:
      ```sql
      SELECT COLUMN_NAME FROM EDP_DEV.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'BRONZE' AND TABLE_NAME = 'DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY'
      MINUS
      SELECT COLUMN_NAME FROM EDP_DEV.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'BRONZE' AND TABLE_NAME = 'DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST';
      ```
-   - **Text.** Compare one HistoryID in both tables: datetimes, decimals, floats, bits.
-   - **Staged copy.** Download one landing file and its staged copy (LVL1_FOLDER_NAME/FILE_NAME), gunzip both and compare. They should hold the same records with the same text.
-6. **Clean up.** Run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST with `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST"]`, `p_Delete_Test_Row = false`. This keeps row 790 for later tests.
+   - **Text.** For one HistoryID, compare both tables: datetimes, decimals, floats, bits.
+   - **Staged copy.** Download one landing file and its staged copy (`<LVL1_FOLDER_NAME>/<FILE_NAME>`), gunzip both and compare.
+5. **Clean up.** Run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST with `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST"]` and `p_Delete_Test_Row = false`.
 
-### Step 2. Import
+### Step 2. Put the pipelines into ADF
 
-1. **Import from the build for your factory** (section 3), in this order: _JSON_LOAD_FILE, _JSON_OUT, _JSON_IN, PL_ATILDA_DATA_PRIME_JSON, _JSON_CLEANUP_TEST.
-2. **Save or publish every pipeline**, then run *Validate all*. A Debug run calls the **saved or published** children, not what is open in the editor; runs 2 and 3 failed this way.
-3. **Old factory:** re-import at least PL_ATILDA_DATA_PRIME_JSON and _JSON_IN. Prepare (row conversion), Begin and the defaults changed. You can delete the retired Parquet pipelines PL_ATILDA_DATA_PRIME, _IN, _OUT, _LOAD_FILE and _CLEANUP_TEST from the factory.
-4. **New factory:** the import saves to data-factory/pipeline/ on your branch. Run one **test prime** there first (step 1's parameters with `source_from`, and a 1-month window) and pass it.
+Use the folder for your factory: `adf_old_json/pipeline/` (old) or `adf_new_json/pipeline/` (new). Load them **children first**:
 
-### Step 3. Read-only checks
+1. PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE
+2. PL_ATILDA_DATA_PRIME_JSON_OUT
+3. PL_ATILDA_DATA_PRIME_JSON_IN
+4. PL_ATILDA_DATA_PRIME_JSON
+5. PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST
 
-1. **Rows.** Run `sql/02_onboard_initial_load.sql` and **save the output** (it is the backup).
-   - A: 156 (TABLE, active), 768 (FILE, PARQUET), 790 (test).
+**Old factory (ADF Studio):**
+1. For each file, go to Author → Pipelines.
+   - If the pipeline exists, open it.
+   - If not, use **+ → Pipeline** and name it exactly as the file.
+2. Click **{ } (Code)**, replace the whole content with the file, then **OK**.
+3. **Save** (git mode) or **Publish** (live mode) after **each** pipeline. A Debug run calls the saved or published children, not what is open in the editor; runs 2 and 3 failed this way.
+4. **Validate all** must show no errors. These must exist: DS_Snowflake_Wh, DS_SQLServer_Shared, DS_Storage_Stage_JSON, DS_STORAGE_V2_STAGE_BIN and the global SourceConfig.
+5. **This round changed _JSON_OUT** (one file at a time) and the entry pipeline (Prepare and Check pair). Re-load those two at least.
+6. The retired Parquet pipelines PL_ATILDA_DATA_PRIME, _IN, _OUT, _LOAD_FILE and _CLEANUP_TEST can be deleted.
+
+**New factory (git-integrated):**
+1. Either import as above, or copy the five files into `data-factory/pipeline/` on a feature branch and open that branch in ADF Studio.
+2. Run **Validate all**.
+3. Run a **test prime** there and pass it before the live prime, using the step 5 parameters with `source_from` and a 1-month window.
+
+### Step 3. Read-only checks (Snowflake, SSMS)
+
+1. **ATILDA rows.** Run `sql/02_onboard_initial_load.sql` and **save the output** (it is your backup).
+   - A: 156 (TABLE, ACTIVE TRUE, SCMergeCO) and 768 (FILE, PARQUET). 790 is also listed (test).
    - B: 768 shows `LIVE_ROW_NEEDS_CONVERT (JSON build)`.
    - C: 768's SOURCE_PATH is used once.
-2. **Delta idle.** This must return no rows:
+2. **Auto LOAD_META of the initial row.** Expect one APPEND row with JOB_GROUP_SEQ 0. No row is also fine: ATILDA creates it on the first load.
+   ```sql
+   SELECT LOAD_META_ID, JOB_GROUP, JOB_ACTION, TARGET_PRIMARY_KEY, JOB_GROUP_SEQ FROM EDP_DEV.CONTROL.LOAD_META
+   WHERE TARGET_TABLE_NAME = 'DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY' ORDER BY 1;
+   ```
+3. **Delta idle.** This must return no rows:
    `SELECT * FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW WHERE EXTRACT_META_ID = 156 AND EXTRACT_RUN_PLAN_STATUS = 'PLANNED';`
-   Start outside the SCMergeCO-DailyLoad window, with enough time to finish before its next run. If it does start meanwhile, the delta is OFF and the run does nothing.
-3. **Size.** Run in SSMS:
+   Start outside the SCMergeCO-DailyLoad window, with time to finish before its next run. Once Begin has run, the delta is OFF and a scheduled run plans nothing for it.
+4. **Size.** In SSMS, against the database SourceConfig['STOCKDB'] points to:
    ```sql
    SELECT COUNT_BIG(*) AS total_rows, SUM(CASE WHEN RefreshDatetime IS NULL THEN 1 ELSE 0 END) AS null_wm,
           MIN(RefreshDatetime) AS min_wm, MAX(RefreshDatetime) AS max_wm
    FROM dbo.ProductNetworkCostsHistory WITH (NOLOCK);
    ```
-   Files = total_rows / p_Rows_Per_File.
-   - Aim for **10–100 files**: 1,000,000 by default, 2–3M for very large tables.
-   - The hard limit is 4999 files.
-   - Rows with a NULL RefreshDatetime are **not** primed (windowed prime). If null_wm > 0, tell me before going live.
-4. **Baseline the live BRONZE table:**
+   - p_Rows_Per_File = total_rows / 10–50 files, between 1,000,000 and 3,000,000.
+   - If null_wm > 0, stop: those rows are not primed (windowed prime).
+5. **Baseline and backup of the live BRONZE table:**
    ```sql
    SELECT COUNT(*), MAX(REFRESHDATETIME) FROM EDP_DEV.BRONZE.DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY;
+   CREATE TABLE <scratch schema>.PNCH_BKP_<yyyymmdd> CLONE EDP_DEV.BRONZE.DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY;  -- zero-copy, if allowed
    ```
-   If you can, keep a zero-copy backup: `CREATE TABLE <scratch schema>.PNCH_BKP_<yyyymmdd> CLONE EDP_DEV.BRONZE.DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY;`
-5. **Grants.** Run `sql/01_grants.sql`. The ADF role needs SELECT and TRUNCATE on the live BRONZE table.
-6. **Optional dry run.** In `sql/10_source_query_test.sql`:
-   - set `@we = N''`, `@ws = N''` and `@n` = your p_Rows_Per_File;
+6. **Grants.** Run `sql/01_grants.sql`. The ADF role needs SELECT and TRUNCATE on the live BRONZE table.
+7. **Optional dry run.** In `sql/10_source_query_test.sql`:
+   - set `@ws = N''`, `@we = N''` and `@n` = your p_Rows_Per_File;
    - expect ERROR_MESSAGE = '';
-   - run the RANGES_SQL it returns to see the batches.
+   - run its RANGES_SQL to see the batches.
 
 ### Step 4. Dry run of the conversion (changes nothing)
 
@@ -164,82 +203,86 @@ Debug PL_ATILDA_DATA_PRIME_JSON with the step 5 parameters, but `p_Prepare_Live_
 
 ### Step 5. Live prime
 
-Debug or trigger **PL_ATILDA_DATA_PRIME_JSON**:
+In ADF: **Debug** (or **Add trigger → Trigger now**) on PL_ATILDA_DATA_PRIME_JSON with:
 
 | Parameter | Value | Note |
 |---|---|---|
 | p_Objects | `[{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID"}]` | No `source_from`, so this is the live table |
-| p_Window_Start | `""` | **Full history.** Begin empties the table, so a start date would permanently drop every older row from BRONZE |
+| p_Window_Start | `""` | **Full history.** Begin empties the table, so a start date would permanently drop every older row |
 | p_Window_End | `""` | The source server's clock at extract start: the delta's handover point |
-| p_Rows_Per_File | from step 3.3 (default 1000000) | |
-| p_Enable_Delta | `true` | Delta 156 goes back ON after a passed reconcile |
-| p_Prepare_Live_Row | `true` | Converts 768 to JSON once. **Save Prepare row's OLD_VALUES** |
+| p_Rows_Per_File | from step 3.4 | |
+| p_Enable_Delta | `true` | |
+| p_Prepare_Live_Row | `true` | Converts 768 once |
 | p_Force | `false` | `true` only after a cancelled run |
 | p_Batch_ID | e.g. `PRIME_LIVE_20261028` | Logged on every plan |
-| p_Staging_Container | `snowflake-data` (old factory only) | |
+| p_Staging_Container | `snowflake-data` | Old factory only |
 
-Expected outputs:
+Watch it in **Monitor → Pipeline runs** (the Debug tab for a Debug run). Open the ForEach "Loop objects", then each activity's output.
 
-1. **Prepare row:** `LIVE_ROW_CONVERTED` with OLD_VALUES. Later runs show `LIVE_ROW_READY`.
-2. **Check pair:** ERROR_MESSAGE empty, TEST_MODE false, INITIAL_META_ID 768, DELTA_META_ID 156.
-3. **Get source columns:** WINDOW_FILTER is only `AND [RefreshDatetime] < CONVERT(<type>, '<server clock>', 126)`.
-4. **Begin prime:** OK, "delta twin 156 is OFF". From here the live table is empty until the load finishes.
-5. **Data in:** one `productnetworkcostshistory_part_<RunId>_b<k>_1.json` per batch in 768's SOURCE_PATH.
-6. **Data out:** plans = files. The first file loads alone, then 4 at a time.
-7. **End prime:** OK; ROWS_COPIED = BRONZE_ROWS; OTHER_ROWS 0; DUP_KEYS 0; no batch mismatch; DELTA_RESTORED true.
+| Activity | Expect |
+|---|---|
+| Prepare row | ACTION `LIVE_ROW_CONVERTED`, OLD_VALUES = 768's Parquet values. **Copy OLD_VALUES somewhere safe.** Later runs show `LIVE_ROW_READY` |
+| Check pair | ERROR_MESSAGE empty, TEST_MODE false, INITIAL_META_ID 768, DELTA_META_ID 156, FILE_PREFIX productnetworkcostshistory |
+| Get source columns | ERROR_MESSAGE empty. WINDOW_FILTER has only the end bound, `AND [RefreshDatetime] < CONVERT(<type>, '<server clock>', 126)`. **Note that time: it is the handover point** |
+| Get batch ranges | One row per batch (about total_rows / p_Rows_Per_File), plus batch 0 only if HistoryID can be NULL and is |
+| Begin prime | STATUS OK, "…delta twin 156 is OFF". **From here the live table is empty until the load finishes** |
+| Data in (child) | One `productnetworkcostshistory_part_<RunId>_b<k>_1.json` per batch in 768's SOURCE_PATH. Output batch_rows |
+| Data out (child) | Generate Run Plan → Get run plan (plans = files) → Load files, one at a time |
+| End prime | STATUS OK; ROWS_COPIED = BRONZE_ROWS; OTHER_ROWS 0; OPEN_PLANS 0; DUP_KEYS 0; BATCH_MISMATCH empty; DELTA_RESTORED true |
 
 ### Step 6. After the run
 
-1. **Monitor.** Run `sql/03_monitor.sql` with the live name and the RunId (trigger time, UTC, yyyyMMddHHmmss).
-   - A: 768 inactive, 156 active.
-   - B: every plan COMPLETED; rows per batch match; MAX watermark just below the end bound.
-2. **Compare with the baseline.**
-   - Expect rows ≈ total_rows − null_wm (rows written after the end bound come in with the delta).
-   - The column list must be the same.
-3. **Delta.** Let the next SCMergeCO run plan and load delta 156 as normal.
+1. **Monitor.** Run `sql/03_monitor.sql` with the live name and the RunId (the run's trigger time, UTC, yyyyMMddHHmmss).
+   - A: 768 ACTIVE FALSE and 156 ACTIVE TRUE.
+   - B: every plan COMPLETED and rows per batch match. MAX watermark is just below the end bound from Get source columns.
+2. **Compare with the step 3.5 baseline.** Rows ≈ total_rows; rows written after the end bound arrive with the delta.
+3. **Delta.** The next SCMergeCO run plans delta 156 from the BRONZE MAX watermark. Check that it COMPLETED:
+   `SELECT * FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW WHERE EXTRACT_META_ID = 156 ORDER BY EXTRACT_RUN_PLAN_ID DESC LIMIT 5;`
+4. **Clean up.** Drop the backup clone once you are satisfied.
 
 ### Step 7. If it fails
 
 | Situation | State | What to do |
 |---|---|---|
-| Fails before Begin | Nothing changed, apart from the 768 conversion | Fix the cause and re-run |
-| Fails after Begin, or End STATUS ERROR | Lock released. **Delta 156 OFF.** BRONZE partial or empty | Read the failed activity or End's MESSAGE, fix the cause and re-run the whole prime. Restore from the clone if you need the data meanwhile |
-| Cancelled | 768 still ACTIVE, delta OFF | Check ADF Monitor that nothing is running, then re-run with `p_Force = true` |
-| Undo the conversion | — | No pipeline does this. A CONTROL_DEV_RW holder restores OLD_VALUES, with sign-off |
+| Fails before Begin | Nothing changed, except the 768 conversion if Prepare already ran with `true` | Fix the cause and re-run |
+| Fails after Begin, or End STATUS ERROR | Lock released. **Delta 156 OFF.** BRONZE partial or empty | Read the failed activity, or End's MESSAGE. Fix the cause and re-run the **whole** prime. Restore from the clone if the data is needed meanwhile |
+| Cancelled | 768 still ACTIVE, delta OFF | Check in ADF Monitor that nothing is running, then re-run with `p_Force = true` |
+
+To read a failure, open the failed activity's error icon. For Data in or Data out, open the child run: Monitor → the child pipeline run → the failed activity.
 
 ## 5. Priming the next object
 
-Every object is a pair of EXTRACT_META rows with the same STAGE_TABLE_NAME:
+Every primed table is a pair of EXTRACT_META rows with the same STAGE_TABLE_NAME:
 - the **delta twin** (SOURCE_TYPE TABLE), which already exists;
-- the **initial row** (SOURCE_TYPE FILE, JSON), which Prepare creates.
+- the **initial row** (SOURCE_TYPE FILE, JSON), which Prepare creates or converts.
 
-Nothing is configured by hand.
+Nothing is configured by hand. Section 10.3 of the skill lists twins that already exist: 769 PRODUCTPRICINGMATRIX, 770 CATALOGUEITEMS, 773 SKU_SKUDETAILS and 779 CURRENTSOH. Prepare converts them, as it does 768.
 
-1. **Check the delta twin** (sql/02 with `stage_table` set to the new table). There must be exactly one TABLE row, and:
-   - SOURCE_NAME is a SourceConfig key of a **SQL Server** source in the factory you use;
-   - OBJECT_NAME is `schema.table`;
-   - PRIMARY_KEYS is set, for the duplicate-key check;
-   - SQL_SNIPPET shows the watermark column.
+1. **ATILDA rows.** Run sql/02 with `stage_table` = the new table. Requirements:
+   - **exactly one** delta twin (TABLE row) whose SOURCE_NAME is a SourceConfig key of a **SQL Server** source in your factory;
+   - OBJECT_NAME = `schema.table`;
+   - PRIMARY_KEYS set, for the duplicate check;
+   - SQL_SNIPPET watermarked from BRONZE MAX (recipe A2).
 
-   Other FILE rows for the table:
+   FILE rows for the table:
    - **none:** Prepare creates the JSON initial row at `data_prime/<table>/`;
-   - **one Parquet INITIAL_LOAD row:** Prepare converts it, as for 768;
+   - **one Parquet INITIAL_LOAD row:** Prepare converts it;
    - **anything else:** ask the ATILDA owners.
 2. **Choose the columns.**
-   - **window_column:** the delta's watermark column. It must be date, datetime, datetime2, smalldatetime or an integer type.
-   - **partition_column:** an integer column that leads an index, ideally the clustered PK. Leave it empty if there is none; the table then extracts as one file in one stream.
-   - **No window_column** (a full-pull delta) means no gap guarantee at handover (DESIGN section 8).
-3. **Grants:** sql/01 for the new BRONZE table (SELECT, TRUNCATE).
-4. **Dry run:** sql/10 with the new table, window and partition column, as in step 3.6.
-5. **Size it** (step 3.3) and pick p_Rows_Per_File.
-6. **Test prime.**
-   - `p_Objects = [{"table":"<T>_PRIME_TEST","source_from":"<T>","window_column":"<wm>","window_start":"<1 month ago>","window_end":"<today>","partition_column":"<key>"}]`
-   - Prepare creates the test row (`data_prime_test/<t>_prime_test/`, inactive, DATA_PRIME). Begin and End never touch the live table or its delta.
-   - Pass the step 1.5 checks, then run the cleanup (`p_Tables = ["<T>_PRIME_TEST"]`; `p_Delete_Test_Row = true` once you no longer need it).
-7. **Live prime:** steps 3–6, with `p_Prepare_Live_Row = true` on the first live run, and with the table's own names, delta id and initial row id.
+   - **window_column:** the delta snippet's watermark column, of a date, datetime or integer type.
+   - **partition_column:** an integer column that leads an index, ideally the clustered PK.
+   - No partition_column means one file in one stream: fine for small tables only.
+   - No window_column means no gap guarantee at handover.
+3. **Grants.** Run sql/01 for the new BRONZE table (SELECT, TRUNCATE).
+4. **Size and dry run** (step 3.4 and 3.7, with the new names).
+5. **Test prime.**
+   - `p_Objects = [{"table":"<T>_PRIME_TEST","source_from":"<T>","window_column":"<wm>","window_start":"<1 month ago>","window_end":"<today>","partition_column":"<key>"}]`.
+   - Prepare creates the test row (`data_prime_test/<t>_prime_test/`, inactive, DATA_PRIME). The live table and its delta are never touched.
+   - Pass the step 1.4 checks, then run the cleanup with `p_Tables = ["<T>_PRIME_TEST"]`. Use `p_Delete_Test_Row = true` once the test row is no longer needed.
+6. **Live prime.** Steps 3–7, with that table's names and ids. Use `p_Prepare_Live_Row = true` on the first live run.
 
 **Several objects in one run.** List them all in `p_Objects`.
-- They run 2 at a time, each up to 4 copies or loads at a time.
+- They run 2 at a time.
 - Each table may appear only once.
 - `p_Force` applies to every listed table, so after a cancel re-run only the cancelled table.
 
@@ -247,20 +290,20 @@ Nothing is configured by hand.
 
 | # | Issue | Fix |
 |---|---|---|
-| 1 | Blank p_Batch_ID arrives as null; SET BATCH ID failed on replace(null) | `@empty(p_Batch_ID)` |
+| 1 | A blank p_Batch_ID arrives as null, and SET BATCH ID failed on replace(null) | `@empty(p_Batch_ID)` |
 | 2 | Copy to BLOB read SOURCE_PATH/FILE_NAME (404). OBJECT_NAME is the landing file; FILE_NAME is ATILDA's target path | Read SOURCE_PATH/OBJECT_NAME, write LVL1_FOLDER_NAME/FILE_NAME (JSON to JSON) |
-| 3 | Old plans stayed open (the view reads extract_run_plan_status) and ATILDA reprocessed them | Begin logs extract_run_plan_status = ABANDONED as well |
+| 3 | Old plans stayed open (the view reads extract_run_plan_status), and ATILDA kept reprocessing them | Begin logs extract_run_plan_status = ABANDONED as well |
 | 4 | A JSON live prime was blocked by the Parquet initial row 768 | Opt-in in-place conversion in Prepare (p_Prepare_Live_Row), with OLD_VALUES |
 | 5 | No JSON build for the new factory | adf_new_json (target `new`) |
-| 6 | Parquet and JSON SQL diverged in two copies; the Parquet build needed Java | Parquet build retired. One set of SQL in tools/, two JSON targets |
-| 7 | Many small files made the load slow (test: 50,000 rows per file) | Default p_Rows_Per_File 1,000,000; guidance of 10–100 files |
-| 8 | A test-row error message pointed at the retired Parquet cleanup | It now points at PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST |
-| 9 | Begin ran a redundant count query | Removed |
+| 6 | The Parquet build needed Java, and its SQL had diverged in two copies | Parquet retired. One SQL set, two JSON targets |
+| 7 | Many small files made the run slow | Default p_Rows_Per_File 1,000,000; aim for 10–50 files |
+| 8 | Data out loaded files 4 at a time. PR_CREATE_EXTRACT_ARTIFACTS also processes the row's other open plans, so two concurrent calls could load one staged file twice | One plan at a time, as the house file pipelines do |
+| 9 | PARALLEL_STAGE_LOAD_FLAG = TRUE was required and written to the live row. The skill's default is FALSE, and TRUE is only for parallel stage loads | No longer required or changed. New initial rows get FALSE |
+| 10 | Minor: a redundant query in Begin, and an error message pointing at the retired Parquet cleanup | Removed and fixed |
 
 **Open items:**
 
-- **A. Is the per-file load cost quadratic?** PR_CREATE_EXTRACT_ARTIFACTS(meta, plan) also logs provision/load for every other open plan of the row (test run 4), and Data out plans all files up front. Check this with step 1.4. If it is confirmed, the next change would plan and load files in smaller waves. Until then, keep files ≤ 100.
-- **B. New factory gate** (section 3, G1–G3).
-- **C. JSON-to-JSON Copy to BLOB re-serialises every record.** Step 1.5 checks that the text is unchanged. If it is not, switch to a byte copy on a new uncompressed Binary dataset with a File parameter.
-- **D. First live load into an existing, truncated BRONZE table.** Only a new-table load has been proven so far. End's reconcile is the safety net: on any mismatch the delta stays OFF.
-- **E. Staged copies are never deleted.** They pile up under LVL1_FOLDER_NAME, as they do for the house pipelines.
+- **A. New factory gate** (section 3, G1–G3).
+- **B. Copy to BLOB re-serialises every record (JSON to JSON).** Step 1.4 checks the text. If it changes, switch to a byte copy on a new uncompressed Binary dataset with a File parameter.
+- **C. First live load into an existing, truncated BRONZE table.** Only a new-table load has run so far. End's reconcile is the safety net: on any mismatch the delta stays OFF.
+- **D. Staged copies are never deleted.** They pile up under LVL1_FOLDER_NAME, as they do for the house pipelines.
