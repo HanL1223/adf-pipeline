@@ -142,11 +142,48 @@
                             ]
                         },
                         {
-                            "name": "Complete BLOB copy",
+                            "name": "Update source rows read",
                             "type": "Lookup",
                             "dependsOn": [
                                 {
                                     "activity": "Copy to BLOB",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SnowflakeV2Source",
+                                    "query": {
+                                        "value": "CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{pipeline().parameters.p_Extract_Run_Plan_Id}, '@{variables('vConst_Rows_Read')}', '@{string(activity('Copy to BLOB').output.rowsRead)}', 'Successful');",
+                                        "type": "Expression"
+                                    },
+                                    "exportSettings": {
+                                        "type": "SnowflakeExportCopyCommand"
+                                    }
+                                },
+                                "dataset": {
+                                    "referenceName": "DS_Snowflake_Wh",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": true
+                            }
+                        },
+                        {
+                            "name": "Complete BLOB copy",
+                            "type": "Lookup",
+                            "dependsOn": [
+                                {
+                                    "activity": "Update source rows read",
                                     "dependencyConditions": [
                                         "Succeeded"
                                     ]
@@ -353,6 +390,10 @@
             "vConst_BlobCopy_Status": {
                 "type": "String",
                 "defaultValue": "source_extract_status"
+            },
+            "vConst_Rows_Read": {
+                "type": "String",
+                "defaultValue": "source_rows_read"
             },
             "vConst_Run_Status": {
                 "type": "String",

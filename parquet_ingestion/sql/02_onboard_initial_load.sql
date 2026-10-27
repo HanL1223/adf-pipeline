@@ -29,7 +29,7 @@ ORDER BY STAGE_TABLE_NAME, SOURCE_TYPE, EXTRACT_META_ID;
 -- JSON build (PL_ATILDA_DATA_PRIME_JSON) only:
 -- LIVE_ROW_NEEDS_CONVERT : a Parquet row. With p_Prepare_Live_Row = true the JSON prime converts it in place
 --                          (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE/STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from
---                          the delta twin, plus the three fixes above). Save this output first: it is the backup.
+--                          the delta twin, plus the two fixes above). Save this output first: it is the backup.
 SELECT EXTRACT_META_ID, OBJECT_NAME, STAGE_FILE_TYPE, STAGE_FILE_SPEC, SCHEMA_DRIFT_CODE, SQL_STATEMENT,
        PARALLEL_STAGE_LOAD_FLAG, RUN_GROUP, ACTIVE_FLAG, SOURCE_PATH,
        CASE WHEN UPPER(STAGE_FILE_TYPE) = 'PARQUET' THEN 'LIVE_ROW_NEEDS_CONVERT (JSON build)'

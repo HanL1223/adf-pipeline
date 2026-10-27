@@ -71,7 +71,7 @@ SELECT
         WHEN path_users > 0 THEN 'SOURCE_PATH ' || i_path || ' is also used by ' || path_users
                           || ' other EXTRACT_META row(s); the prime clears that folder, so it must be unique.'
         WHEN NOT test_mode AND d_open > 0 THEN 'Delta twin ' || d_id || ' has ' || d_open || ' open (PLANNED) plan(s). Let the delta run finish, '
-                          || 'or abandon them (Altida_Skill.md section 8), then re-run.'
+                          || 'then re-run.'
         WHEN CONTAINS(COALESCE(d_snippet, ''), '$$') THEN 'Delta twin ' || d_id || ' SQL_SNIPPET contains $$; not supported.'
         WHEN i_active AND NOT {{FORCE}} THEN 'Initial row ' || i_id || ' is ACTIVE: another prime is running, or one was '
                           || 'cancelled. Check ADF Monitor, then re-run with p_Force = true.'

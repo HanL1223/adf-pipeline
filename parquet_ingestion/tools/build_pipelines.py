@@ -7,6 +7,7 @@ Edit the pipelines here, not in the JSON, so the T-SQL in the pipeline and the S
 """
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -170,8 +171,13 @@ def load_file():
             depends=[("If BATCH ID exists", "Succeeded")],
             false=[
                 copy,
-                sf_lookup("Complete BLOB copy", log("vConst_BlobCopy_Status", "vConst_Complete", "'Successful'"),
+                # House file pipelines log source_rows_read after the copy (they log dataRead; rowsRead is the row count).
+                sf_lookup("Update source rows read",
+                          f"CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{{{plan}}}, '@{{variables('vConst_Rows_Read')}}', "
+                          "'@{string(activity('Copy to BLOB').output.rowsRead)}', 'Successful');",
                           depends=[("Copy to BLOB", "Succeeded")], retry=2),
+                sf_lookup("Complete BLOB copy", log("vConst_BlobCopy_Status", "vConst_Complete", "'Successful'"),
+                          depends=[("Update source rows read", "Succeeded")], retry=2),
                 sf_lookup("Fail BLOB copy",
                           log("vConst_BlobCopy_Status", "vConst_Fail",
                               "$$@{replace(activity('Copy to BLOB').error.message, '$$', '')}$$"),
@@ -195,7 +201,7 @@ def load_file():
          "p_Source_Extract_Status": sp("string", ""), "p_Batch_ID": sp("string", ""),
          "p_Object_Name": sp("string"), **container_param()},
         {"vConst_Complete": const("COMPLETED"), "vConst_Fail": const("FAILED"),
-         "vConst_BlobCopy_Status": const("source_extract_status"),
+         "vConst_BlobCopy_Status": const("source_extract_status"), "vConst_Rows_Read": const("source_rows_read"),
          "vConst_Run_Status": const("extract_run_plan_status"), "vConst_Batch_Id": const("batch_id")},
         acts)
 
@@ -330,9 +336,9 @@ def data_in():
         "<StagingContainer>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. "
         "The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME before anything "
         "changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME.",
-        {"p_Initial_Meta_Id": sp("string"), "p_Source_Name": sp("string"), "p_Source_Path": sp("string"),
+        {"p_Source_Name": sp("string"), "p_Source_Path": sp("string"),
          "p_File_Prefix": sp("string"), "p_Run_Id": sp("string"), "p_Source_Query": sp("string"),
-         "p_Batches": sp("array"), "p_Rows_Per_File": sp("int", ROWS_PER_FILE),
+         "p_Batches": sp("array"),
          **container_param()},
         {"vBatch_Rows": {"type": "Array", "defaultValue": []}}, acts)
 
@@ -344,7 +350,7 @@ def fill(template, values):
     for k, v in values.items():
         assert "{{" + k + "}}" in template, k
         template = template.replace("{{" + k + "}}", v)
-    left = [t for t in ("{{TABLE}}", "{{FORCE}}", "{{RUN}}", "{{INIT}}", "{{DELTA}}") if t in template]
+    left = re.findall(r"\{\{[A-Z_]+\}\}", template)
     assert not left, left
     return template
 
@@ -425,20 +431,22 @@ def parent(tsql):
          "typeProperties": {"source": {"type": "SqlServerSource", "sqlReaderQuery": E(f"@{{{cols}.RANGES_SQL}}"),
                                        "queryTimeout": "06:00:00", "partitionOption": "None"},
                             "dataset": sql_ds(f"{pair}.SOURCE_NAME"), "firstRowOnly": False}},
-        sf_lookup("Begin prime", begin_sql, depends=[("Get batch ranges", "Succeeded")],
+        if_("Check batch ranges", "@equals(length(activity('Get batch ranges').output.value), 0)",
+            depends=[("Get batch ranges", "Succeeded")],
+            true=[fail("Raise no rows", f"@concat(item().table, ': no rows in the window; nothing to prime. BRONZE not touched.')",
+                       "PRIME_NO_ROWS")]),
+        sf_lookup("Begin prime", begin_sql, depends=[("Check batch ranges", "Succeeded")],
                   desc="Lock (initial row ACTIVE), abandon its old plans, delta OFF, truncate BRONZE "
                        "(tools/sf_begin.sql). Everything before this is read-only."),
         if_("Check begin", f"@not(equals({begin}.STATUS, {ok}))", depends=[("Begin prime", "Succeeded")],
             true=[fail("Raise begin error", f"@concat(item().table, ': ', {begin}.MESSAGE)", "PRIME_BEGIN_FAILED")]),
         exec_pl("Data in", "PL_ATILDA_DATA_PRIME_IN", {
-            "p_Initial_Meta_Id": f"@string({pair}.INITIAL_META_ID)",
             "p_Source_Name": f"@{pair}.SOURCE_NAME",
             "p_Source_Path": f"@{pair}.SOURCE_PATH",
             "p_File_Prefix": f"@{pair}.FILE_PREFIX",
             "p_Run_Id": RUN_ID,
             "p_Source_Query": f"@{cols}.SOURCE_QUERY",
             "p_Batches": "@activity('Get batch ranges').output.value",
-            "p_Rows_Per_File": f"@{p('p_Rows_Per_File')}",
             **container_arg()}, depends=[("Check begin", "Succeeded")]),
         exec_pl("Data out", "PL_ATILDA_DATA_PRIME_OUT", {
             "p_Initial_Meta_Id": f"@string({pair}.INITIAL_META_ID)",
@@ -562,7 +570,7 @@ def main():
                  "__N__": str(ROWS_PER_FILE)}.items():
         test = test.replace(k, v)
     src = "tools/source_query.tsql"
-    header = (f"-- Dry run of the 'Get source columns' Lookup in {PL} (README.md section 4, step 3.6).\n"
+    header = (f"-- Dry run of the 'Get source columns' Lookup in {PL} (README.md section 4, step 3.7).\n"
               "-- Read-only. Run in SSMS against the source database as the ADF SQL login.\n"
               "-- Edit the six DECLARE values below, then run. Expect ERROR_MESSAGE = '' and copy RANGES_SQL into a\n"
               "-- new window to see the batch ranges.\n"
