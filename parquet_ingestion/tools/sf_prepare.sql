@@ -17,6 +17,7 @@ EXECUTE IMMEDIATE $$
 --         STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from the delta twin) plus the fixes above. Its id and SOURCE_NAME
 --         stay. OLD_VALUES holds every changed column, so the row can be put back by hand.
 --   Anything else: no change; 'Check pair' reports the problem.
+-- p_Force (a row left ACTIVE by a cancelled run) lets Prepare change that row anyway, as it lets Begin take its lock.
 -- CONTROL text columns carry a collation: COLLATE(col, '') before TRIM with characters and SPLIT_PART.
 -- Tokens {{...}} are replaced by tools/build_pipelines.py.
 DECLARE
@@ -51,9 +52,11 @@ BEGIN
         IF (n_name > 0) THEN
             -- Test rows belong to the prime: keep an inactive one on the SOURCE_PATH convention.
             UPDATE EDP_DEV.CONTROL.EXTRACT_META SET SOURCE_PATH = :v_path
-            WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND NOT COALESCE(ACTIVE_FLAG, FALSE)
+            WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND (NOT COALESCE(ACTIVE_FLAG, FALSE) OR {{FORCE}})
               AND ENDSWITH(UPPER(SOURCE_NAME), '_PRIME_TEST_INITIAL_LOAD')
-              AND LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ '));
+              AND LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ '))
+              AND NOT EXISTS (SELECT 1 FROM EDP_DEV.CONTROL.EXTRACT_META x
+                              WHERE LOWER(TRIM(COLLATE(x.SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ ')));
             n_path := SQLROWCOUNT;
             v_action := 'TEST_ROW_EXISTS';
             msg := 'Test row for ' || v_table || ' already exists.'
@@ -116,6 +119,8 @@ BEGIN
                     OR LOWER(TRIM(COALESCE(COLLATE(SOURCE_PATH, ''), ''), '/ ')) <> LOWER(TRIM(:v_path, '/ ')))
             INTO :v_old, :v_active, :v_needs
             FROM EDP_DEV.CONTROL.EXTRACT_META WHERE EXTRACT_META_ID = :v_id;
+            SELECT COUNT(*) INTO :n_path FROM EDP_DEV.CONTROL.EXTRACT_META
+            WHERE EXTRACT_META_ID <> :v_id AND LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ '));
             IF (NOT v_needs) THEN
                 v_action := 'LIVE_ROW_READY';
                 msg := 'Initial row ' || v_id || ' is ready.';
@@ -125,13 +130,17 @@ BEGIN
                 msg := 'Initial row ' || v_id || ' needs SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME and SOURCE_PATH '
                     || v_path || ' (now ' || v_old || '). Nothing changed. Re-run with p_Prepare_Live_Row = true '
                     || 'to apply; the old values are recorded in this output.';
-            ELSEIF (v_active) THEN
+            ELSEIF (v_active AND NOT {{FORCE}}) THEN
                 v_status := 'ERROR';
-                msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed.';
+                msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed. '
+                    || 'After a cancelled run, re-run with p_Force = true.';
+            ELSEIF (n_path > 0) THEN
+                v_status := 'ERROR';
+                msg := 'Cannot prepare initial row ' || v_id || ': SOURCE_PATH ' || v_path || ' is used by another row.';
             ELSE
                 UPDATE EDP_DEV.CONTROL.EXTRACT_META
                 SET SQL_STATEMENT = NULL, RUN_GROUP = 'DATA_PRIME', SOURCE_PATH = :v_path
-                WHERE EXTRACT_META_ID = :v_id AND COALESCE(ACTIVE_FLAG, FALSE) = FALSE;
+                WHERE EXTRACT_META_ID = :v_id AND (COALESCE(ACTIVE_FLAG, FALSE) = FALSE OR {{FORCE}});
                 IF (SQLROWCOUNT = 0) THEN
                     v_status := 'ERROR';
                     msg := 'Initial row ' || v_id || ' became ACTIVE before it could be prepared; not changed.';
@@ -146,8 +155,10 @@ BEGIN
             SELECT COUNT(*), MAX(EXTRACT_META_ID) INTO :n_pq, :v_id FROM EDP_DEV.CONTROL.EXTRACT_META
             WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'FILE' AND UPPER(STAGE_FILE_TYPE) = 'PARQUET'
               AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
+            -- Rows other than the Parquet row being converted (v_id NULL when there is none) already on the path.
             SELECT COUNT(*) INTO :n_path FROM EDP_DEV.CONTROL.EXTRACT_META
-            WHERE LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ '));
+            WHERE EXTRACT_META_ID <> COALESCE(:v_id, -1)
+              AND LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) = LOWER(TRIM(:v_path, '/ '));
             IF (n_pq = 1) THEN
                 -- Parquet INITIAL_LOAD row from an earlier onboarding: convert it in place (opt-in).
                 SELECT TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL('EXTRACT_META_ID', EXTRACT_META_ID, 'OBJECT_NAME', OBJECT_NAME,
@@ -170,9 +181,13 @@ BEGIN
                     v_status := 'ERROR';
                     msg := 'Cannot convert initial row ' || v_id || ': expected 1 delta twin (SOURCE_TYPE TABLE) for '
                         || v_table || ', found ' || n_delta || '.';
-                ELSEIF (v_active) THEN
+                ELSEIF (v_active AND NOT {{FORCE}}) THEN
                     v_status := 'ERROR';
-                    msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed.';
+                    msg := 'Initial row ' || v_id || ' is ACTIVE (a prime is running, or one was cancelled); not changed. '
+                        || 'After a cancelled run, re-run with p_Force = true.';
+                ELSEIF (n_path > 0) THEN
+                    v_status := 'ERROR';
+                    msg := 'Cannot convert initial row ' || v_id || ': SOURCE_PATH ' || v_path || ' is used by another row.';
                 ELSE
                     UPDATE EDP_DEV.CONTROL.EXTRACT_META m
                     SET OBJECT_NAME = d.OBJ, STAGE_FILE_TYPE = NULL, STAGE_FILE_SPEC = NULL, SCHEMA_DRIFT_CODE = d.SDC,
@@ -181,7 +196,7 @@ BEGIN
                                  COALESCE(SCHEMA_DRIFT_CODE, 2) AS SDC
                           FROM EDP_DEV.CONTROL.EXTRACT_META
                           WHERE UPPER(STAGE_TABLE_NAME) = :v_table AND SOURCE_TYPE = 'TABLE') d
-                    WHERE m.EXTRACT_META_ID = :v_id AND COALESCE(m.ACTIVE_FLAG, FALSE) = FALSE
+                    WHERE m.EXTRACT_META_ID = :v_id AND (COALESCE(m.ACTIVE_FLAG, FALSE) = FALSE OR {{FORCE}})
                       AND UPPER(m.STAGE_FILE_TYPE) = 'PARQUET';
                     IF (SQLROWCOUNT = 0) THEN
                         v_status := 'ERROR';

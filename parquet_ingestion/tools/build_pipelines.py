@@ -28,7 +28,7 @@ LANDING = "@pipeline().parameters.p_Landing_Container"
 LANDING_DEFAULT = "json-priming"
 STAGING = ("@pipeline().parameters.p_Staging_Container" if OLD_FACTORY
            else "@pipeline().globalParameters.StagingContainer")
-PL = "PL_ATILDA_DATA_PRIME_JSON"   # every pipeline name; the names are already imported in the old factory
+PL = "PL_ATILDA_DATA_PRIME_JSON"   # entry pipeline; children are PL + _IN / _OUT / _CLEANUP_TEST (already imported)
 EXT = ".json"
 EXTRACT = "Extract to json"
 FOLDER = "ALTIDA/00 Templates/01 Extract/03 Data Prime JSON"  # entry point: the one you trigger
@@ -120,16 +120,16 @@ def if_(name, expr, true=(), false=(), depends=(), desc=None):
 
 def exec_pl(name, pipeline, params, depends=()):
     return {"name": name, "type": "ExecutePipeline", "dependsOn": dep(*depends), "userProperties": [],
-            "typeProperties": {"pipeline": {"referenceName": pipeline.replace("PL_ATILDA_DATA_PRIME", PL, 1),
+            "typeProperties": {"pipeline": {"referenceName": pipeline,
                                             "type": "PipelineReference"},
                                "waitOnCompletion": True, "parameters": {k: E(v) for k, v in params.items()}}}
 
 
 def pipeline(name, desc, params, variables, activities):
-    return {"name": name.replace("PL_ATILDA_DATA_PRIME", PL, 1), "properties": {
-        "description": desc.replace("PL_ATILDA_DATA_PRIME", PL), "activities": activities, "parameters": params,
+    return {"name": name, "properties": {
+        "description": desc, "activities": activities, "parameters": params,
         "variables": variables,
-        "folder": {"name": FOLDER if name == "PL_ATILDA_DATA_PRIME" else CHILD_FOLDER}, "annotations": []}}
+        "folder": {"name": FOLDER if name == PL else CHILD_FOLDER}, "annotations": []}}
 
 
 def sp(t, default=None):
@@ -148,7 +148,7 @@ def esc(expr):
     return f"replace({expr}, '''', '''''')"
 
 
-# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_OUT
+# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_JSON_OUT
 def load_plan_activities():
     """One ATILDA file plan (item() of 'Load files'): the per-plan body of the house file pipelines
     (DI_FILE_INITIAL_Shared_Parquet, DI_FILE_CSV_DFIO), on JSON."""
@@ -203,7 +203,7 @@ def load_plan_activities():
             ]),
         sf_lookup("Provision SI artifacts and load data",
                   f"CALL CONTROL.PR_CREATE_EXTRACT_ARTIFACTS(@{{item().EXTRACT_META_ID}}, @{{{plan}}});",
-                  depends=[("Check if blobcopy is COMPLETE", "Succeeded")], timeout="0.12:00:00"),
+                  depends=[("Check if blobcopy is COMPLETE", "Succeeded")]),
         sf_lookup("Complete ETL run", log("vConst_Run_Status", "vConst_Complete", "'Successful'"),
                   depends=[("Provision SI artifacts and load data", "Succeeded")], retry=2),
     ]
@@ -255,10 +255,10 @@ def data_out():
          "typeProperties": {"items": E(f"@{plans}"), "isSequential": True, "activities": load_plan_activities()}},
     ]
     return pipeline(
-        "PL_ATILDA_DATA_PRIME_OUT",
+        PL + "_OUT",
         "Data prime, part 2 (data out): plan this run's JSON files in ATILDA (one plan per file), then per plan copy "
         "the file to the ATILDA path and load it into BRONZE, one at a time (house file-pipeline loop). "
-        "Called by PL_ATILDA_DATA_PRIME.",
+        "Called by PL_ATILDA_DATA_PRIME_JSON.",
         {"p_Initial_Meta_Id": sp("string"), "p_Initial_Source_Name": sp("string"), "p_Source_Path": sp("string"),
          "p_File_Prefix": sp("string"), "p_Run_Id": sp("string"), "p_Batch_ID": sp("string", ""),
          **container_params(staging=True)},
@@ -268,7 +268,7 @@ def data_out():
         acts)
 
 
-# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_IN
+# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_JSON_IN
 def data_in():
     # House delta sink (TPL_E_RDBMS_J4_V2): JsonSink to DS_Storage_Stage_JSON (gzip), no Java, no staging. The JSON sink
     # has no maxRowsPerFile/fileNamePrefix, so each batch writes one named file. The '_1' suffix keeps the
@@ -291,22 +291,8 @@ def data_in():
                             f"@{{{p('p_File_Prefix')}}}_part_@{{{p('p_Run_Id')}}}_b@{{item().BATCH_NO}}_1.json",
                             LANDING)]}
     acts = [
-        {"name": "Check landing folder", "type": "GetMetadata", "dependsOn": [],
-         "policy": policy("0.01:00:00", 2), "userProperties": [],
-         "typeProperties": {"dataset": bin_ds(f"@{p('p_Source_Path')}"), "fieldList": ["exists"],
-                            "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False},
-                            "formatSettings": {"type": "BinaryReadSettings"}}},
-        if_("Clear landing folder", "@activity('Check landing folder').output.exists",
-            depends=[("Check landing folder", "Succeeded")],
-            desc="Removes this object's part files from earlier runs. SOURCE_PATH is unique per object (checked by Check pair).",
-            true=[{"name": "Delete old part files", "type": "Delete", "dependsOn": [],
-                   "policy": policy("0.01:00:00", 2), "userProperties": [],
-                   "typeProperties": {"dataset": bin_ds(f"@{p('p_Source_Path')}"), "enableLogging": False,
-                                      "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
-                                                        "wildcardFileName": E(f"@concat({p('p_File_Prefix')}, "
-                                                                              f"'_part_*{EXT}')")}}}]),
         {"name": "Extract batches", "type": "ForEach",
-         "dependsOn": dep(("Clear landing folder", "Succeeded")),
+         "dependsOn": [],
          "userProperties": [],
          "typeProperties": {"items": E(f"@{p('p_Batches')}"), "isSequential": False,
                             "batchCount": 4, "activities": [
@@ -318,17 +304,17 @@ def data_in():
                                      f"string(activity('{EXTRACT}').output.rowsCopied), '}}'))")}}]}},
         {"name": "Return batch rows", "type": "SetVariable", "dependsOn": dep(("Extract batches", "Succeeded")),
          "userProperties": [], "policy": {"secureOutput": False, "secureInput": False},
-         "description": "Returns [{b, rows}] per batch to PL_ATILDA_DATA_PRIME, which reconciles them against BRONZE.",
+         "description": "Returns [{b, rows}] per batch to PL_ATILDA_DATA_PRIME_JSON, which reconciles them against BRONZE.",
          "typeProperties": {"variableName": "pipelineReturnValue", "setSystemVariable": True,
                             "value": [{"key": "batch_rows",
                                        "value": {"type": "Expression", "content": "@variables('vBatch_Rows')"}}]}},
     ]
     return pipeline(
-        "PL_ATILDA_DATA_PRIME_IN",
+        PL + "_IN",
         "Data prime, part 1 (data in): extract one SQL Server table to JSON part files in "
         "<p_Landing_Container>/<SOURCE_PATH>/, in parallel key-range batches. ADF version of the PDF Python script. "
-        "The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME before anything "
-        "changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME.",
+        "The source query is validated and built by 'Get source columns' in PL_ATILDA_DATA_PRIME_JSON before anything "
+        "changes. Returns the rows extracted per batch. Called by PL_ATILDA_DATA_PRIME_JSON.",
         {"p_Source_Name": sp("string"), "p_Source_Path": sp("string"),
          "p_File_Prefix": sp("string"), "p_Run_Id": sp("string"), "p_Source_Query": sp("string"),
          "p_Batches": sp("array"),
@@ -336,7 +322,7 @@ def data_in():
         {"vBatch_Rows": {"type": "Array", "defaultValue": []}}, acts)
 
 
-# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME
+# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_JSON
 def fill(template, values):
     """Replace {{TOKEN}}s in a SQL template with ADF interpolations; every token must be used."""
     assert "@{" not in template and not template.startswith("@"), "template text must not look like an ADF expression"
@@ -376,8 +362,7 @@ def parent(tsql):
               "BRONZE": lit(f"{pair}.BRONZE_TABLE")}
     check_sql = fill(sf("sf_check_pair.sql"), {"TABLE": lit("trim(string(item().table))"), "FORCE": i(p("p_Force")),
                                                "SOURCE_FROM": lit(opt("source_from", "''")),
-                                               "ENABLE_DELTA": lit(f"string({opt('enable_delta', p('p_Enable_Delta'))})"),
-                                               "ROWS_PER_FILE": i(f"string({p('p_Rows_Per_File')})")})
+                                               "ENABLE_DELTA": lit(f"string({opt('enable_delta', p('p_Enable_Delta'))})")})
     common["TEST_MODE"] = i(f"{pair}.TEST_MODE")
     begin_sql = fill(sf("sf_begin.sql"), dict(common, FORCE=i(p("p_Force")), DELTA_ACTIVE=i(f"{pair}.DELTA_ACTIVE")))
     end_sql = fill(sf("sf_end.sql"), dict(
@@ -387,7 +372,7 @@ def parent(tsql):
         ENABLE_DELTA=i(f"{pair}.ENABLE_DELTA"), DELTA_MAX_PLAN=i(f"{begin}.DELTA_MAX_PLAN")))
     prepare_sql = fill(sf("sf_prepare.sql"), {"TABLE": lit("trim(string(item().table))"),
                                               "SOURCE_FROM": lit(opt("source_from", "''")),
-                                              "PREPARE_LIVE": i(p("p_Prepare_Live_Row")),
+                                              "PREPARE_LIVE": i(p("p_Prepare_Live_Row")), "FORCE": i(p("p_Force")),
                                               "ENABLE_DELTA": lit(f"string({opt('enable_delta', p('p_Enable_Delta'))})"),
                                               "ROWS_PER_FILE": i(f"string({p('p_Rows_Per_File')})")})
     prep = "activity('Prepare row').output.firstRow"
@@ -428,12 +413,28 @@ def parent(tsql):
             depends=[("Get batch ranges", "Succeeded")],
             true=[fail("Raise no rows", f"@concat(item().table, ': no rows in the window; nothing to prime. BRONZE not touched.')",
                        "PRIME_NO_ROWS")]),
-        sf_lookup("Begin prime", begin_sql, depends=[("Check batch ranges", "Succeeded")],
+        # Landing folder before Begin: removes earlier runs' part files and proves the landing container is reachable
+        # and writable while nothing has changed yet.
+        {"name": "Check landing folder", "type": "GetMetadata", "dependsOn": dep(("Check batch ranges", "Succeeded")),
+         "policy": policy("0.01:00:00", 2), "userProperties": [],
+         "typeProperties": {"dataset": bin_ds(f"@{pair}.SOURCE_PATH"), "fieldList": ["exists"],
+                            "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False},
+                            "formatSettings": {"type": "BinaryReadSettings"}}},
+        if_("Clear landing folder", "@activity('Check landing folder').output.exists",
+            depends=[("Check landing folder", "Succeeded")],
+            desc="Removes this object's part files from earlier runs (SOURCE_PATH is the object's own folder).",
+            true=[{"name": "Delete old part files", "type": "Delete", "dependsOn": [],
+                   "policy": policy("0.01:00:00", 2), "userProperties": [],
+                   "typeProperties": {"dataset": bin_ds(f"@{pair}.SOURCE_PATH"), "enableLogging": False,
+                                      "storeSettings": {"type": "AzureBlobStorageReadSettings", "recursive": False,
+                                                        "wildcardFileName": E(f"@concat({pair}.FILE_PREFIX, "
+                                                                              f"'_part_*{EXT}')")}}}]),
+        sf_lookup("Begin prime", begin_sql, depends=[("Clear landing folder", "Succeeded")],
                   desc="Lock (initial row ACTIVE), abandon its old plans, delta OFF, truncate BRONZE "
-                       "(tools/sf_begin.sql). Everything before this is read-only."),
+                       "(tools/sf_begin.sql). Everything before this is read-only, except clearing old landing files."),
         if_("Check begin", f"@not(equals({begin}.STATUS, {ok}))", depends=[("Begin prime", "Succeeded")],
             true=[fail("Raise begin error", f"@concat(item().table, ': ', {begin}.MESSAGE)", "PRIME_BEGIN_FAILED")]),
-        exec_pl("Data in", "PL_ATILDA_DATA_PRIME_IN", {
+        exec_pl("Data in", PL + "_IN", {
             "p_Source_Name": f"@{pair}.SOURCE_NAME",
             "p_Source_Path": f"@{pair}.SOURCE_PATH",
             "p_File_Prefix": f"@{pair}.FILE_PREFIX",
@@ -441,7 +442,7 @@ def parent(tsql):
             "p_Source_Query": f"@{cols}.SOURCE_QUERY",
             "p_Batches": "@activity('Get batch ranges').output.value",
             **container_args()}, depends=[("Check begin", "Succeeded")]),
-        exec_pl("Data out", "PL_ATILDA_DATA_PRIME_OUT", {
+        exec_pl("Data out", PL + "_OUT", {
             "p_Initial_Meta_Id": f"@string({pair}.INITIAL_META_ID)",
             "p_Initial_Source_Name": f"@{pair}.INITIAL_SOURCE_NAME",
             "p_Source_Path": f"@{pair}.SOURCE_PATH",
@@ -491,7 +492,7 @@ def parent(tsql):
                             "activities": body}},
     ]
     return pipeline(
-        "PL_ATILDA_DATA_PRIME",
+        PL,
         "One-click data priming (initial load) of SQL Server tables into BRONZE via ATILDA. "
         "p_Objects: [{\"table\": \"<STAGE_TABLE_NAME>\", \"window_column\": \"<col>\", \"window_start\": \"\", "
         "\"window_end\": \"\", \"partition_column\": \"<int key>\", \"enable_delta\": true, \"source_from\": \"<live table, test prime only>\"}]. "
@@ -505,7 +506,7 @@ def parent(tsql):
         acts)
 
 
-# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_CLEANUP_TEST
+# ---------------------------------------------------------------- PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST
 def cleanup_test():
     res = "activity('Cleanup test target').output.firstRow"
     sql = fill(open(os.path.join(HERE, "sf_cleanup_test.sql")).read(),
@@ -534,7 +535,7 @@ def cleanup_test():
                                                         "wildcardFileName": "*" + EXT}}}]),
     ]
     pl = pipeline(
-        "PL_ATILDA_DATA_PRIME_CLEANUP_TEST",
+        PL + "_CLEANUP_TEST",
         "Removes test prime targets (*_PRIME_TEST): drops the test BRONZE table, deletes its landing files and, with "
         "p_Delete_Test_Row = true, the test EXTRACT_META row and its auto LOAD_META row. Never touches a live table.",
         {"p_Tables": sp("array", []), "p_Delete_Test_Row": sp("bool", False),

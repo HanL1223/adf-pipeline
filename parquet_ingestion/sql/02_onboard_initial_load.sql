@@ -39,10 +39,9 @@ FROM CONTROL.EXTRACT_META
 WHERE UPPER(STAGE_TABLE_NAME) = UPPER($stage_table) AND SOURCE_TYPE = 'FILE'
   AND ENDSWITH(UPPER(SOURCE_NAME), 'INITIAL_LOAD');
 
--- ===================================================================================================== C. SOURCE_PATH must be unique
--- The convention is <lowercase table>/ (the row's folder in the landing container, json-priming); a path shared by
--- two rows would let one prime clear the other's files.
-SELECT LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) AS SOURCE_PATH, COUNT(*) AS ROWS_USING_IT
+-- ===================================================================================================== C. SOURCE_PATH must be free
+-- The convention is <lowercase table>/ (the row's folder in the landing container, json-priming). Expect only this
+-- table's own initial row and test row here; any other row on these paths blocks Prepare and Check pair.
+SELECT EXTRACT_META_ID, STAGE_TABLE_NAME, SOURCE_TYPE, SOURCE_PATH
 FROM CONTROL.EXTRACT_META
-WHERE UPPER(STAGE_TABLE_NAME) IN (UPPER($stage_table), UPPER($stage_table) || '_PRIME_TEST') AND SOURCE_TYPE = 'FILE'
-GROUP BY 1;   -- expect 1 per path (compared case-insensitively, as Check pair does)
+WHERE LOWER(TRIM(COLLATE(SOURCE_PATH, ''), '/ ')) IN (LOWER($stage_table), LOWER($stage_table) || '_prime_test');

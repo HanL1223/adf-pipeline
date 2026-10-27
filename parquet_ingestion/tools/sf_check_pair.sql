@@ -47,8 +47,6 @@ y AS (SELECT x.*, 'EDP_DEV."' || REPLACE(UPPER(tschema), '"', '""') || '"."' || 
       FROM x)
 SELECT
     CASE
-        WHEN TRY_TO_BOOLEAN('{{ENABLE_DELTA}}') IS NULL THEN 'enable_delta / p_Enable_Delta must be true or false, got {{ENABLE_DELTA}}.'
-        WHEN {{ROWS_PER_FILE}} < 1000 THEN 'p_Rows_Per_File must be at least 1000, got {{ROWS_PER_FILE}}.'
         WHEN ni <> 1 THEN 'Expected 1 INITIAL_LOAD JSON row (SOURCE_TYPE FILE, STAGE_FILE_TYPE NULL) for {{TABLE}}, found ' || ni
                           || '. Test target: if an old (Parquet) test row exists, run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST '
                           || 'with p_Delete_Test_Row = true first. Live table: re-run with p_Prepare_Live_Row = true.'
