@@ -24,10 +24,7 @@ OLD_FACTORY = TARGET == "old"
 # Two containers on the same storage account (linked service cwraseedpst):
 #   LANDING: the prime's own extract files, <p_Landing_Container>/<SOURCE_PATH = lowercase table>/. Only ADF reads them.
 #   STAGING: the ATILDA container, the only one Snowflake reads (EDP_AZURE_SI_DEV). Only 'Copy to BLOB' writes there.
-LANDING = "@pipeline().parameters.p_Landing_Container"
-LANDING_DEFAULT = "json-priming"
-STAGING = ("@pipeline().parameters.p_Staging_Container" if OLD_FACTORY
-           else "@pipeline().globalParameters.StagingContainer")
+LANDING_DEFAULT = "json-priming"   # LANDING and STAGING (the expressions) are defined after p(), below
 PL = "PL_ATILDA_DATA_PRIME_JSON"   # entry pipeline; children are PL + _IN / _OUT / _CLEANUP_TEST (already imported)
 EXT = ".json"
 EXTRACT = "Extract to json"
@@ -58,8 +55,35 @@ def E(v):
     return {"value": v, "type": "Expression"}
 
 
+# Defaults of the optional pipeline parameters. A parameter left blank in Debug or Trigger now (or passed blank through
+# Execute Pipeline) arrives as null, not as its declared default, and null breaks replace()/string()/length() and the
+# SQL it is spliced into. So every reference to an optional parameter falls back to its default (see p()), and
+# pipeline() asserts that each declared default is listed here with the same value.
+OPTIONAL = {"p_Objects": [], "p_Tables": [], "p_Window_Start": "", "p_Window_End": "", "p_Rows_Per_File": ROWS_PER_FILE,
+            "p_Enable_Delta": True, "p_Prepare_Live_Row": False, "p_Force": False, "p_Delete_Test_Row": False,
+            "p_Clear_Landing": False, "p_Batch_ID": "", "p_Landing_Container": LANDING_DEFAULT,
+            "p_Staging_Container": "snowflake-data"}
+
+
+def adf_literal(v):
+    """A Python default as an ADF expression literal."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, list):
+        return "json('[]')"
+    return "'" + v.replace("'", "''") + "'"
+
+
 def p(name):
-    return f"pipeline().parameters.{name}"
+    """Reference to a pipeline parameter; an optional one falls back to its default when it arrives as null."""
+    ref = f"pipeline().parameters.{name}"
+    return f"coalesce({ref}, {adf_literal(OPTIONAL[name])})" if name in OPTIONAL else ref
+
+
+LANDING = "@" + p("p_Landing_Container")
+STAGING = "@" + p("p_Staging_Container") if OLD_FACTORY else "@pipeline().globalParameters.StagingContainer"
 
 
 def policy(timeout="0.12:00:00", retry=0):
@@ -126,6 +150,9 @@ def exec_pl(name, pipeline, params, depends=()):
 
 
 def pipeline(name, desc, params, variables, activities):
+    for k, v in params.items():
+        if "defaultValue" in v:
+            assert OPTIONAL.get(k) == v["defaultValue"], f"{name}: default of {k} must match OPTIONAL"
     return {"name": name, "properties": {
         "description": desc, "activities": activities, "parameters": params,
         "variables": variables,
