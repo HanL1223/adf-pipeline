@@ -26,7 +26,7 @@
                                 "type": "Expression"
                             },
                             "Container": {
-                                "value": "@pipeline().parameters.p_Landing_Container",
+                                "value": "@coalesce(pipeline().parameters.p_Landing_Container, 'json-priming')",
                                 "type": "Expression"
                             }
                         }
@@ -249,7 +249,7 @@
                             "userProperties": [],
                             "typeProperties": {
                                 "expression": {
-                                    "value": "@empty(pipeline().parameters.p_Batch_ID)",
+                                    "value": "@empty(coalesce(pipeline().parameters.p_Batch_ID, ''))",
                                     "type": "Expression"
                                 },
                                 "ifFalseActivities": [
@@ -269,7 +269,7 @@
                                             "source": {
                                                 "type": "SnowflakeV2Source",
                                                 "query": {
-                                                    "value": "CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{item().EXTRACT_RUN_PLAN_ID}, '@{variables('vConst_Batch_Id')}', '@{replace(pipeline().parameters.p_Batch_ID, '''', '''''')}', 'Successful');",
+                                                    "value": "CALL CONTROL.PR_LOG_EXTRACT_RUN_PLAN(@{item().EXTRACT_RUN_PLAN_ID}, '@{variables('vConst_Batch_Id')}', '@{replace(coalesce(pipeline().parameters.p_Batch_ID, ''), '''', '''''')}', 'Successful');",
                                                     "type": "Expression"
                                                 },
                                                 "exportSettings": {
@@ -353,7 +353,7 @@
                                                         "type": "Expression"
                                                     },
                                                     "Container": {
-                                                        "value": "@pipeline().parameters.p_Landing_Container",
+                                                        "value": "@coalesce(pipeline().parameters.p_Landing_Container, 'json-priming')",
                                                         "type": "Expression"
                                                     }
                                                 }
@@ -373,7 +373,7 @@
                                                         "type": "Expression"
                                                     },
                                                     "Container": {
-                                                        "value": "@pipeline().parameters.p_Staging_Container",
+                                                        "value": "@coalesce(pipeline().parameters.p_Staging_Container, 'snowflake-data')",
                                                         "type": "Expression"
                                                     }
                                                 }

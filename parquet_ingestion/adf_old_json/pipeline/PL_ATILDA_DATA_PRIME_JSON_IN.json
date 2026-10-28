@@ -10,7 +10,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "expression": {
-                        "value": "@pipeline().parameters.p_Clear_Landing",
+                        "value": "@coalesce(pipeline().parameters.p_Clear_Landing, false)",
                         "type": "Expression"
                     },
                     "ifTrueActivities": [
@@ -36,7 +36,7 @@
                                             "type": "Expression"
                                         },
                                         "Container": {
-                                            "value": "@pipeline().parameters.p_Landing_Container",
+                                            "value": "@coalesce(pipeline().parameters.p_Landing_Container, 'json-priming')",
                                             "type": "Expression"
                                         }
                                     }
@@ -148,7 +148,7 @@
                                             "type": "Expression"
                                         },
                                         "Container": {
-                                            "value": "@pipeline().parameters.p_Landing_Container",
+                                            "value": "@coalesce(pipeline().parameters.p_Landing_Container, 'json-priming')",
                                             "type": "Expression"
                                         }
                                     }

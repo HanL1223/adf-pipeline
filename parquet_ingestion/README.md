@@ -792,6 +792,7 @@ python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pi
 | 15 | Read probe of the landing folder before Begin (no read access fails before anything changes); old part files are cleared by Data in after the lock |
 | 16 | Prepare honours p_Force for a row left ACTIVE by a cancelled run, refuses to move a row onto a path another row uses, and stops with the reason when a test row cannot be moved |
 | 17 | The Snowflake V2 connector refused Prepare row (SnowflakeQueryStringNotSupported) because two comments contained the words "copy" and "put"; reworded, and tools/check.py now fails the build on PUT/COPY in any Snowflake query |
+| 18 | A parameter left blank in Debug or Trigger now arrives as null, not as its default; Get source columns failed on a blank p_Window_End (`replace` on Null), and blank p_Force / p_Prepare_Live_Row / p_Rows_Per_File / containers would have broken later steps. Every optional parameter is now read as `coalesce(<param>, <its default>)`, and tools/check.py fails the build on any optional parameter read without it |
 
 ### Open items
 

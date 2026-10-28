@@ -87,6 +87,7 @@ def check_pipeline(fn, all_names):
     pl = json.load(open(fn))
     props = pl["properties"]
     params = set(props.get("parameters", {}))
+    optional = {k for k, v in props.get("parameters", {}).items() if "defaultValue" in v}
     variables = set(props.get("variables", {}))
 
     def acts_of(a):
@@ -151,9 +152,13 @@ def check_pipeline(fn, all_names):
                     for m in re.findall(r"variables\('([^']+)'\)", seg):
                         if m not in variables:
                             errors.append(f"{path}: unknown variable {m}")
-                    for m in re.findall(r"pipeline\(\)\.parameters\.([A-Za-z_0-9]+)", seg):
+                    for mo in re.finditer(r"pipeline\(\)\.parameters\.([A-Za-z_0-9]+)", seg):
+                        m = mo.group(1)
                         if m not in params:
                             errors.append(f"{path}: unknown parameter {m}")
+                        # A blank optional parameter arrives as null, not as its default: it must be read via coalesce.
+                        elif m in optional and not seg[:mo.start()].endswith("coalesce("):
+                            errors.append(f"{path}: optional parameter {m} used without coalesce(..., default)")
                     if "item()" in seg and not in_foreach and a["type"] != "Filter":
                         errors.append(f"{path}: item() outside ForEach")
             for k, sub in acts_of(a):
