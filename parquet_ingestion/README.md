@@ -6,7 +6,7 @@
 
 **Framework rules.** These follow `src/cw_batch_priming/Altida_Skill.md.docx` (the "ATILDA guide"). Where this solution deliberately differs, section 9 says so and why.
 
-Status: 2026-10-27. This file is the only current guide. The superseded README.md.docx, handover.md.docx and adf_old_json/README.md.docx were removed (they remain in git history). DESIGN.md.docx still holds the design history.
+Status: 2026-10-28. This file is the only current guide (adf_new_json/README.md only notes the new-factory build). The superseded README.md.docx, handover.md.docx and adf_old_json/README.md.docx were removed (they remain in git history). DESIGN.md.docx still holds the design history.
 
 ---
 
@@ -95,7 +95,7 @@ SELECT EXTRACT_META_ID, SOURCE_NAME, SOURCE_TYPE, STAGE_TABLE_NAME, ACTIVE_FLAG
 FROM EDP_DEV.CONTROL.EXTRACT_META WHERE UPPER(RUN_GROUP) = 'DATA_PRIME' ORDER BY 1;
 ```
 
-In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each trigger's parameters). The house pipelines match run groups with CONTAINS, so also check that no trigger passes a fragment of it (DATA, PRIME) or a value ending in ALL.
+In ADF, check that no trigger passes DATA_PRIME (Manage → Triggers → each trigger's parameters). The house pipelines match run groups with CONTAINS, so also check that no trigger passes a fragment of it (DATA, PRIME) or a value ending in ALL. Check **both** factories: they share the ATILDA rows, and only the new factory's triggers are in this repo.
 
 ---
 
@@ -192,7 +192,7 @@ Fill this in during step A of section 5. Every later step uses these values.
 | total_rows / null_wm / min_wm / max_wm | step A4 count | |
 | p_Rows_Per_File | 1,000,000 by default. For big tables, raise it (up to about 3,000,000) to keep files at ≤ 100 | |
 | enable_delta | `true` if the delta row is ACTIVE today; `false` if it is inactive on purpose | |
-| Delta trigger and schedule | The **started** trigger that passes the delta's SOURCE_NAME and RUN_GROUP to DI_RDBMS_Shared_SQL_Server (ADF → Manage → Triggers), e.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time. It keeps the table current after the prime. Avoid running the prime across it. **If there is none, nothing loads the table after the prime**: get a trigger added before the live prime | |
+| Delta trigger and schedule | a **started** trigger, in the factory the delta runs from, that starts DI_RDBMS_Shared_SQL_Server **or** E_RDBMS_Shared_SQL_Server with `p_Source_Name` = the delta's SOURCE_NAME exactly and a `p_Run_Group` (without its `GRP:` prefix) contained in the delta's RUN_GROUP, or ending in ALL (ADF → Manage → Triggers, in both factories). E.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time. It keeps the table current after the prime. Avoid running the prime across it. **If no factory has one, nothing loads the table after the prime**: get a trigger added before the live prime | |
 
 ---
 
@@ -299,7 +299,7 @@ SELECT COUNT(*), MAX(<WM>) FROM EDP_DEV.BRONZE.<T>;
 CREATE TABLE <scratch schema>.<T>_BKP_<yyyymmdd> CLONE EDP_DEV.BRONZE.<T>;   -- zero-copy, if your role may
 ```
 
-**C2. Auto LOAD_META** for the initial row. Expect one APPEND row with JOB_GROUP_SEQ 0, or none (ATILDA then creates it on the first load). **Do not edit it** (ATILDA guide section 1).
+**C2. Auto LOAD_META.** The query returns the delta row's own auto LOAD_META (JOB_GROUP `EXTRACT_RUN_PLAN_<delta SOURCE_NAME>_<T>`). It may also return one APPEND row, JOB_GROUP_SEQ 0, whose JOB_GROUP contains the initial row's SOURCE_NAME. If that second row is missing, ATILDA creates it on the first load. **Do not edit either** (ATILDA guide section 1).
 
 ```sql
 SELECT LOAD_META_ID, JOB_GROUP, JOB_ACTION, TARGET_PRIMARY_KEY, JOB_GROUP_SEQ
@@ -344,7 +344,7 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
 | Activity | Must show |
 |---|---|
 | Prepare row | STATUS OK. ACTION `LIVE_ROW_CONVERTED`, `CREATED_LIVE_ROW`, `LIVE_ROW_PREPARED` or `LIVE_ROW_READY`. OLD_VALUES = the row before the change |
-| Check pair | ERROR_MESSAGE empty, TEST_MODE false, INITIAL_META_ID and DELTA_META_ID as in the worksheet |
+| Check pair | ERROR_MESSAGE empty, TEST_MODE false, DELTA_META_ID as in the worksheet, INITIAL_META_ID = the existing initial row, or the id Prepare just created (ILS, INVENTSUM) |
 | Get source columns | ERROR_MESSAGE empty. WINDOW_FILTER has only the end bound, `AND [<wm>] < CONVERT(<type>, '<server clock>', 126)`, or `< <window_end>` for an integer watermark |
 | Get batch ranges | One row per batch (≈ total_rows / p_Rows_Per_File), plus batch 0 if the key has NULLs |
 | Begin prime | STATUS OK, "…delta twin <id> is OFF". **From here the live table is empty until the load finishes** |
@@ -361,14 +361,14 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
    - B: all plans COMPLETED, and rows per batch match.
    - The MAX watermark is just below the WINDOW_FILTER end time (integer watermark: compare `MAX(<wm>)` with `window_end` instead).
 2. **Row count** ≈ total_rows from A4. Rows written after the end time arrive with the next delta.
-3. **Next delta run.** You do not run anything for this. The house delta pipeline (`DI_RDBMS_Shared_SQL_Server`, started by the trigger for the delta's SOURCE_NAME and RUN_GROUP) plans every **active** delta row, and loads only rows with `<wm> > MAX(<wm>)` in BRONZE. After its scheduled time, check:
+3. **Next delta run.** You do not run anything for this. The house delta pipeline (DI_RDBMS_Shared_SQL_Server or E_RDBMS_Shared_SQL_Server, started by the trigger in the worksheet) plans every **active** delta row, and loads only rows with `<wm> > MAX(<wm>)` in BRONZE. After its scheduled time, check:
    ```sql
    SELECT * FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW WHERE EXTRACT_META_ID = <delta id>
    ORDER BY EXTRACT_RUN_PLAN_ID DESC LIMIT 5;   -- latest plan COMPLETED
    ```
 4. **Drop the backup clone** once you are satisfied.
 5. **Leave the initial row** as it is (inactive, DATA_PRIME). It is only used by the next prime.
-6. **Do not re-prime to stay current.** The delta keeps BRONZE up to date from here (FAQ, "How do I keep the gap small until deployment?"). Re-prime only for a clean full reload.
+6. **Do not re-prime to stay current.** The delta keeps BRONZE up to date from here (FAQ, "How do I keep the gap small until deployment, without re-priming?"). Re-prime only for a clean full reload.
 
 ### F. If something fails
 
@@ -378,7 +378,7 @@ Open the failed activity's error icon. For Data in or Data out, open the child p
 |---|---|---|
 | Fails before Begin prime | Nothing changed (except Prepare's row setup, if `p_Prepare_Live_Row` was true) | Fix the cause and re-run |
 | Fails after Begin, or End STATUS ERROR | Lock released. **Delta row OFF** (live). BRONZE empty or partial | Fix the cause and re-run the **whole** prime. Restore the clone if the data is needed meanwhile |
-| End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners. Re-enabling the delta without a re-prime is the one manual exception: only a CONTROL_DEV_RW holder, with sign-off (sql/03 C) |
+| End STATUS ERROR "left OFF … watermark not usable" | Data loaded and reconciled, delta row OFF | The delta's watermark column has values Snowflake cannot parse. Fix it at the source, or decide with the ATILDA owners. Re-enabling the delta without a re-prime is allowed only as a sign-off exception. The two sign-off exceptions (a CONTROL_DEV_RW holder, sql/03 C) are re-enabling the delta after a passed prime, and restoring a Prepare row from OLD_VALUES. |
 | One file fails to load | The remaining files still load, then Abort runs | In the _JSON_OUT run, open the failed "Load files" iteration to read the error. Fix the cause and re-run the **whole prime** (never _JSON_OUT alone) |
 | "Check landing folder" fails (no read access) | Before Begin: nothing changed | Grant the factory identity access to the landing container (section 3.1), then re-run |
 | Data in fails writing or deleting in the landing container (container missing, no write access) | After Begin: BRONZE empty, delta row OFF | Create the container or grant the factory identity Storage Blob Data Contributor on it, then re-run the whole prime. Write access is first used here, which is why a passed test prime in the same factory and container is required before a live prime |
@@ -387,7 +387,7 @@ Open the failed activity's error icon. For Data in or Data out, open the child p
 | "… is ACTIVE: another prime is running, or one was cancelled" | Lock held | As above: confirm, then `p_Force = true` |
 | "Delta twin … has open (PLANNED) plan(s)" | A delta run is in progress | Wait for it to finish, then re-run |
 
-**Never** fix ATILDA rows by hand. Re-running the prime is the recovery. To undo a Prepare conversion, a CONTROL_DEV_RW holder restores OLD_VALUES, with sign-off.
+**Never** fix ATILDA rows by hand. Re-running the prime is the recovery. The two sign-off exceptions (a CONTROL_DEV_RW holder, sql/03 C) are re-enabling the delta after a passed prime, and restoring a Prepare row from OLD_VALUES.
 
 ### G. Several tables in one run
 
@@ -505,7 +505,7 @@ Values marked *from sql/02* or *from A4* are not in this repo. Fill them in duri
 | Source (SourceConfig key → server / database in the new factory's repo) | STOCKDB → 192.168.29.58 / STOCKDB | ILS → 192.168.29.79 / ILS | SCAX2012 → 192.168.29.164 / SCAX2012 |
 | Source object | dbo.ProductNetworkCostsHistory | the delta row's OBJECT_NAME *from sql/02* (expected dbo.LOCATION_INVENTORY) | the delta row's OBJECT_NAME *from sql/02* (expected dbo.INVENTSUM) |
 | Delta row | **156**, RUN_GROUP SCMergeCO, ACTIVE | id, RUN_GROUP, ACTIVE *from sql/02* | id, RUN_GROUP, ACTIVE *from sql/02* |
-| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time | SCMergeCOILS- Dailyload, **16:20** Sydney time (in this repo, if the delta is in SCMergeCO) | **No trigger for SCAX2012 in this repo.** Find the delta row's RUN_GROUP (sql/02), then a **started** ADF trigger that passes `p_Source_Name = SCAX2012` and that group (Manage → Triggers). **If there is none, nothing keeps INVENTSUM current after the prime**, so get one added before step 6 |
+| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time | SCMergeCOILS- Dailyload, **16:20** Sydney time (DI_RDBMS, if the delta's group contains SCMergeCO). If the group contains INCREMENTAL: "ILS - Daily delta load", 04:15 (E_RDBMS). These are the new factory's triggers; check the old factory too | **No trigger for SCAX2012 in this repo** (the new factory). Find the delta row's RUN_GROUP (sql/02), then look in **both** factories for a started trigger matching the worksheet rule. **If neither has one, nothing keeps INVENTSUM current after the prime**, so get one added before step 6. Check the old factory first, so you don't request a duplicate |
 | Initial row today | **768**, Parquet, so Prepare **converts** it | expected **none**, so Prepare **creates** it | expected **none**, so Prepare **creates** it |
 | Landing folder (SOURCE_PATH) | `json-priming/db_stockdb_productnetworkcostshistory/` | `json-priming/db_ils_location_inventory/` | `json-priming/db_scax2012_inventsum/` |
 | Test table and folder | `…_PRIME_TEST`, existing test row **790** (moved to the new folder automatically) | `DB_ILS_LOCATION_INVENTORY_PRIME_TEST`, created on the first test | `DB_SCAX2012_INVENTSUM_PRIME_TEST`, created on the first test |
@@ -521,7 +521,7 @@ Values marked *from sql/02* or *from A4* are not in this repo. Fill them in duri
 | What you see | Delta type | What to do |
 |---|---|---|
 | SQL_SNIPPET has `WHERE <col> > '…MAX(…)…'` read from BRONZE (ATILDA guide, recipe A2) | **Watermark delta** | Prime it. The rest of this section applies |
-| SQL_SNIPPET is only `SELECT concat('WITH (NOLOCK)',''),''` (no WHERE), usually with SQL_STATEMENT `1=1` (recipe A) | **Full reload**: every delta run already reloads the whole table | **Do not prime it.** The next delta run would replace the primed data anyway. Leave that table to its delta and tell me which one it is |
+| SQL_SNIPPET is only `SELECT concat('WITH (NOLOCK)',''),''` (no WHERE), usually with SQL_STATEMENT `1=1` (recipe A) | **Full reload**: every delta run already reloads the whole table | **Do not prime it.** The next delta run would replace the primed data anyway. Leave that table to its delta and record it in the worksheet |
 | Anything else | — | Stop and ask before priming |
 
 **Q2. Is the watermark column in local time or UTC?** Run in SSMS against that table's source database:
@@ -531,6 +531,7 @@ SELECT MAX(<wm>) AS max_wm, SYSDATETIME() AS server_local, SYSUTCDATETIME() AS s
 FROM <schema.table> WITH (NOLOCK);
 ```
 
+- **max_wm hours or days old** (a static, weekly-refreshed source): nothing changes during the extract, so leave `window_end` empty.
 - **max_wm close to server_local** (PNCH expected): leave `window_end` empty. The default end is the server's local clock.
 - **max_wm close to server_utc** (INVENTSUM expected): **Different:** set `"window_end"` in the live p_Objects to the current UTC time, rounded down to the minute, e.g. `"2026-10-29T03:15:00"`. Take it from `SYSUTCDATETIME()` just before you start the live run.
   - Why: the default end is the local clock, which is 10–11 hours ahead of UTC. Rows changed during the extract would then fall inside the prime window, and the delta's `> MAX` could miss some of them.
@@ -547,7 +548,9 @@ WHERE ic.object_id = OBJECT_ID('<schema.table>') AND ic.key_ordinal = 1
   AND TYPE_NAME(c.system_type_id) IN ('tinyint', 'smallint', 'int', 'bigint');
 ```
 
-- Pick the CLUSTERED one if there is one, otherwise a unique one.
+- Pick a **unique, high-cardinality** column; for Dynamics AX tables (SCAX2012) that is **RECID**.
+- **Never PARTITION** (AX 2012 R2/R3 lead almost every index with it, and it has one value), or any column with few distinct values: you would get a single batch.
+- Use the clustered index's lead column only if it is near-unique.
 - If no rows come back, leave `partition_column` out. The table is then extracted as one file in one stream, which is fine below a few million rows only.
 
 ### 8.3 Step by step
@@ -556,9 +559,10 @@ WHERE ic.object_id = OBJECT_ID('<schema.table>') AND ic.key_ordinal = 1
 1. Create the container and grant access (section 3.1).
 2. Load the four pipelines (section 3.2).
 3. **SourceConfig.** In the factory you will use, the global parameter **SourceConfig** must have the keys **STOCKDB**, **ILS** and **SCAX2012**, each pointing at the database you intend to prime from (ADF → Manage → Global parameters).
-4. **Grants.** Run sql/01 (section 3.3) for **all three** BRONZE tables: DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM.
+4. **Grants.** Run sql/01 (section 3.3), then `SHOW GRANTS ON TABLE EDP_DEV.BRONZE.<T>;` for **each** of DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM. Expect SELECT and TRUNCATE for DEV_ACCOUNT_ROLE_DATA_INGESTION, directly or through its database role.
 5. **Run group.** Run the DATA_PRIME query in section 2. Only initial rows may appear.
-6. **Delta triggers.** For each table, confirm a started trigger runs its delta row (worksheet row "Delta trigger and schedule"). Today this repo has one for STOCKDB (06:00) and ILS (16:20, group SCMergeCO), and **none for SCAX2012**.
+6. **Delta triggers.** For each table, confirm a started trigger runs its delta row (worksheet row "Delta trigger and schedule", both factories). In this repo (the new factory): STOCKDB at 06:00 and ILS at 16:20 (DI_RDBMS, SCMergeCO), plus "StockDB/ILS - Daily delta load" at 04:05/04:15 (E_RDBMS, GRP:INCREMENTAL), and none for SCAX2012. Check the old factory before requesting one.
+7. **Factory.** Use the old factory (cwr-ase-edp-dev-adf, `adf_old_json`) until the new-factory gate G1–G5 passes (section 3.1).
 
 **Step 1. Read-only checks (once per table).** Do section 5 A for each table, then:
 - Fill in the *from …* cells in 8.1.
@@ -573,6 +577,8 @@ Expected result of sql/02 B per table:
 | If it shows something else | — | Follow the table in section 5 A1 | Follow the table in section 5 A1 |
 
 **Step 2. Test primes (section 5 B).** One run can test all three, two at a time. p_Rows_Per_File applies to the whole run, so 50000 is used for all of them.
+
+First, count each table's rows in the test window (A4 with a `WHERE <wm> >= '2026-09-26' AND <wm> < '2026-10-26'`). Inventory tables can change millions of rows a month. If 50000 gives more than about 10 files for a table, test that table in its own run with a larger p_Rows_Per_File, or with a shorter window.
 - `p_Rows_Per_File = 50000`
 - `p_Objects` (fill in `<wm>` and `<key>` for ILS and INVENTSUM):
 
@@ -582,7 +588,10 @@ Expected result of sql/02 B per table:
  {"table":"DB_SCAX2012_INVENTSUM_PRIME_TEST","source_from":"DB_SCAX2012_INVENTSUM","window_column":"<wm>","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"<key>"}]
 ```
 
-- **Different:** drop any table whose Q1 answer was "full reload". Drop `partition_column` for a table with no candidate in Q3.
+- **Different:**
+  - Drop any table whose Q1 answer was "full reload".
+  - Drop `partition_column` for a table with no candidate in Q3.
+  - For an **integer** watermark, use integer window_start/window_end covering about a month of values instead of dates.
 - **Expected Prepare row per table:**
 
   | | PNCH | ILS | INVENTSUM |
@@ -598,17 +607,19 @@ Expected result of sql/02 B per table:
 2. Then run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST with:
    `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST","DB_ILS_LOCATION_INVENTORY_PRIME_TEST","DB_SCAX2012_INVENTSUM_PRIME_TEST"]`
 
-**Step 4. Backups (section 5 C1–C2).** Take a clone and baseline count, and check the auto LOAD_META, **per table**. For ILS and INVENTSUM, LOAD_META for the initial row does not exist yet; ATILDA creates it on the first load.
+**Step 4. Backups (section 5 C1–C2).** Take a clone and baseline count, and check the auto LOAD_META, **per table**.
+- PNCH shows two rows: 60 (delta 156) and 192 (initial row 768).
+- ILS and INVENTSUM show only their delta's row. The initial row's LOAD_META is created by ATILDA on the first load.
 
 **Step 5. Live dry runs (section 5 C3).**
-1. Use the D1 parameters below with `"window_start":"2999-01-02","window_end":"2999-01-01"` added, and `p_Prepare_Live_Row = false`. One run can carry all three.
+1. Use the step 6 p_Objects with `p_Prepare_Live_Row = false`. In each object, set `"window_start":"2999-01-02"` and `"window_end":"2999-01-01"`, **replacing** any existing window_end (INVENTSUM's UTC one). One run can carry all three.
 2. **Expected:**
 
    | | PNCH | ILS | INVENTSUM |
    |---|---|---|---|
    | Check prepare | fails with `LIVE_ROW_NEEDS_CONVERT` | fails with `LIVE_ROW_MISSING` | fails with `LIVE_ROW_MISSING` |
 
-3. Nothing changes. Remove the two window keys before step 6.
+3. Nothing changes. For step 6, start again from the step 6 p_Objects, taking a fresh UTC window_end where Q2 requires one.
 
 **Step 6. Live primes: one table per run.** Prime them separately. Their p_Rows_Per_File and delta schedules differ, and a failure then leaves only one delta OFF. Suggested order: **ILS, then INVENTSUM, then PNCH** (largest last), each after the previous one has passed step 7.
 
@@ -717,16 +728,16 @@ If a live run fails partway, re-run the whole prime. Begin abandons the failed a
 
 **Does a prime change the delta's schedule or group?** No. Only the delta row's ACTIVE_FLAG changes during a live prime.
 
-**After the prime, do I run anything daily or weekly?** No. The existing house delta pipeline does it. DI_RDBMS_Shared_SQL_Server, started by the trigger for the delta's SOURCE_NAME and RUN_GROUP, calls `PR_CREATE_EXTRACT_RUN_PLAN(<source>, <group>)` for every **active** delta row, and loads only `<wm> > MAX(<wm>)` from BRONZE. When the source only changes weekly, most runs find nothing (NODATA, COMPLETED). Check that a started trigger exists for each table's delta (worksheet).
+**After the prime, do I run anything daily or weekly?** No. The existing house delta pipeline does it. DI_RDBMS_Shared_SQL_Server or E_RDBMS_Shared_SQL_Server, started by the trigger for the delta's SOURCE_NAME and RUN_GROUP, calls `PR_CREATE_EXTRACT_RUN_PLAN(<source>, <group>)` for every **active** delta row, and loads only `<wm> > MAX(<wm>)` from BRONZE. When the source only changes weekly, most runs find nothing (NODATA, COMPLETED). Check that a started trigger exists for each table's delta (worksheet).
 
 **How do I keep the gap small until deployment, without re-priming?** Prime once with `p_Enable_Delta = true`. End turns the delta on after a passed reconcile, and from then on each delta run loads only what changed since the prime, so BRONZE stays current up to deployment. A re-prime reloads the whole window file by file, which is slow, so keep it for a clean full reload.
-- If the delta must stay off until deployment, prime with `p_Enable_Delta = false`. Its first run after it is turned on then loads everything since the prime in one go. Turning it on by hand is the one manual CONTROL exception: a CONTROL_DEV_RW holder, with sign-off (sql/03 C).
+- If the delta must stay off until deployment, prime with `p_Enable_Delta = false`. Its first run after it is turned on then loads everything since the prime in one go. Turning it on by hand is a sign-off exception. The two sign-off exceptions (a CONTROL_DEV_RW holder, sql/03 C) are re-enabling the delta after a passed prime, and restoring a Prepare row from OLD_VALUES.
 - This only works for a **watermark** delta (section 8.2 Q1). A full-reload delta replaces the table on every run anyway.
 - If the delta's LOAD_TYPE is APPEND, each change to an existing row adds another row version in BRONZE. That is the delta's normal behaviour, not something the prime adds.
 
 **The source database is refreshed weekly (for example on Mondays). When should I prime?** After a refresh. The source is then static until the next one, so any prime in that week extracts the same rows. Two primes in the same week, for example into two Snowflake accounts, get identical data.
 
-**Can I re-use the landing files to prime the same period into another Snowflake account?** No. Re-run the whole pipeline there.
+**Can I re-use the landing files to prime the same period into another Snowflake account?** No. Re-run the whole pipeline there, from a factory whose DS_Snowflake_Wh points at that account. Otherwise change SF_DATASET in tools/build_pipelines.py (and `EDP_DEV` in tools/sf_*.sql if the database name differs) and regenerate.
 - Data out only plans the current run's files (by RunId).
 - End needs Data in's per-batch counts to reconcile.
 - Data in clears the table's old part files before it extracts.
@@ -743,6 +754,7 @@ The extract is the cheap part anyway: the time goes into the per-file ATILDA loa
 |---|---|
 | adf_old_json/pipeline/ | The 4 pipelines for cwr-ase-edp-dev-adf |
 | adf_new_json/pipeline/ | The 4 pipelines for cwr-ae-dev-data-adf |
+| adf_new_json/README.md | Short note on the new-factory build (its staging container and gate) |
 | tools/build_pipelines.py | Generates both builds and sql/10. **Never hand-edit the pipeline JSON** |
 | tools/source_query.tsql | Get source columns (T-SQL) |
 | tools/sf_prepare.sql, sf_check_pair.sql, sf_begin.sql, sf_end.sql, sf_cleanup_test.sql | The Snowflake blocks (EXECUTE IMMEDIATE) used by the Lookups |
