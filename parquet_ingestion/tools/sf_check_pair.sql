@@ -1,4 +1,5 @@
--- The initial row must stage JSON (STAGE_FILE_TYPE NULL) with OBJECT_NAME <prefix>_part_%.json.
+-- The initial row must stage JSON (STAGE_FILE_TYPE NULL) with OBJECT_NAME <prefix>_part_%.json and SOURCE_PATH
+-- <lowercase table>/ (its folder in the landing container).
 -- 'Check pair' Lookup (read-only). Finds the INITIAL_LOAD / delta pair of one STAGE_TABLE_NAME, validates it and
 -- derives everything later steps need. Tokens {{...}} are replaced by tools/build_pipelines.py.
 -- Test mode: when source_from names another (live) table, the delta twin is looked up under that name and used
@@ -46,8 +47,6 @@ y AS (SELECT x.*, 'EDP_DEV."' || REPLACE(UPPER(tschema), '"', '""') || '"."' || 
       FROM x)
 SELECT
     CASE
-        WHEN TRY_TO_BOOLEAN('{{ENABLE_DELTA}}') IS NULL THEN 'enable_delta / p_Enable_Delta must be true or false, got {{ENABLE_DELTA}}.'
-        WHEN {{ROWS_PER_FILE}} < 1000 THEN 'p_Rows_Per_File must be at least 1000, got {{ROWS_PER_FILE}}.'
         WHEN ni <> 1 THEN 'Expected 1 INITIAL_LOAD JSON row (SOURCE_TYPE FILE, STAGE_FILE_TYPE NULL) for {{TABLE}}, found ' || ni
                           || '. Test target: if an old (Parquet) test row exists, run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST '
                           || 'with p_Delete_Test_Row = true first. Live table: re-run with p_Prepare_Live_Row = true.'
@@ -63,7 +62,10 @@ SELECT
                           || '''; it must be NULL (1=1 deletes BRONZE before every file). Re-run with p_Prepare_Live_Row = true.'
         WHEN UPPER(COALESCE(i_group, '')) <> 'DATA_PRIME' THEN 'Initial row ' || i_id || ' RUN_GROUP is '
                           || COALESCE(i_group, 'NULL') || '; it must be DATA_PRIME so no trigger runs it. Re-run with p_Prepare_Live_Row = true.'
-        WHEN NULLIF(TRIM(i_path), '') IS NULL THEN 'Initial row ' || i_id || ' has no SOURCE_PATH.'
+        WHEN LOWER(TRIM(COALESCE(i_path, ''), '/ ')) <> LOWER(TRIM('{{TABLE}}'))
+             THEN 'Initial row ' || i_id || ' SOURCE_PATH must be ' || LOWER(TRIM('{{TABLE}}')) || '/ (its folder in the '
+                  || 'landing container), got ' || COALESCE(i_path, 'NULL') || '. Re-run: Prepare moves a test row itself; '
+                  || 'a live row needs p_Prepare_Live_Row = true.'
         WHEN i_object IS NULL OR NOT ENDSWITH(LOWER(i_object), '_part_%.json') OR LENGTH(i_object) <= 12
              OR CONTAINS(LEFT(i_object, LENGTH(i_object) - 12), '%')
              THEN 'Initial row ' || i_id || ' OBJECT_NAME must be <prefix>_part_%.json, got ' || COALESCE(i_object, 'NULL') || '.'
