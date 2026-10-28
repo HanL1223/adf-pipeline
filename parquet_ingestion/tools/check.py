@@ -128,6 +128,13 @@ def check_pipeline(fn, all_names):
                         errors.append(f"{where}: missing child params {req - given}")
                     if given - set(child):
                         errors.append(f"{where}: unknown child params {given - set(child)}")
+            # The Snowflake V2 connector refuses a Lookup query containing the file-transfer words PUT or COPY, even in a
+            # comment (SnowflakeQueryStringNotSupported). Check the literal text; @{...} parts are resolved by ADF first.
+            src = a.get("typeProperties", {}).get("source", {})
+            if src.get("type") == "SnowflakeV2Source":
+                literal = re.sub(r"@\{[^}]*\}", "", src["query"]["value"])
+                for word in sorted(set(re.findall(r"\b(?:put|copy)\b", literal, re.I))):
+                    errors.append(f"{where}: Snowflake query contains '{word}' (refused by the connector)")
             vals = []
             walk_values({k: v for k, v in a.items()}, where, vals)
             for path, v in vals:

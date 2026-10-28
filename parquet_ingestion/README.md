@@ -791,6 +791,7 @@ python3 tools/build_pipelines.py . new && python3 tools/check.py adf_new_json/pi
 | 14 | PL_ATILDA_DATA_PRIME_JSON_LOAD_FILE merged into _JSON_OUT ("Load files" ForEach, house shape): 4 pipelines instead of 5 |
 | 15 | Read probe of the landing folder before Begin (no read access fails before anything changes); old part files are cleared by Data in after the lock |
 | 16 | Prepare honours p_Force for a row left ACTIVE by a cancelled run, refuses to move a row onto a path another row uses, and stops with the reason when a test row cannot be moved |
+| 17 | The Snowflake V2 connector refused Prepare row (SnowflakeQueryStringNotSupported) because two comments contained the words "copy" and "put"; reworded, and tools/check.py now fails the build on PUT/COPY in any Snowflake query |
 
 ### Open items
 
