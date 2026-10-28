@@ -4,7 +4,7 @@ EXECUTE IMMEDIATE $$
 -- the first file (all NULL there) are added later instead of being dropped. Live mode can also convert a Parquet
 -- INITIAL_LOAD row left by the retired Parquet build (opt-in, below).
 -- SOURCE_PATH is always the lowercase table name + '/': the row's own folder in the prime's landing container
--- (p_Landing_Container, default json-priming). Only ADF reads it; Snowflake reads the staged copy in snowflake-data.
+-- (p_Landing_Container, default json-priming). Only ADF reads it; Snowflake reads the staged file in snowflake-data.
 -- 'Prepare row' Lookup: the setup DML, run as the ADF role (which holds CONTROL_DEV_RW), before 'Check pair'.
 --   Test  (source_from set, table = <source_from>_PRIME_TEST): create the test INITIAL_LOAD row from the live delta
 --         twin if it does not exist yet, or move an existing inactive test row to the SOURCE_PATH convention.
@@ -15,7 +15,7 @@ EXECUTE IMMEDIATE $$
 --         If the table has no JSON initial row but exactly one Parquet INITIAL_LOAD row (an earlier Parquet onboarding),
 --         p_Prepare_Live_Row = true converts that row in place to JSON (OBJECT_NAME <t>_part_%.json, STAGE_FILE_TYPE and
 --         STAGE_FILE_SPEC NULL, SCHEMA_DRIFT_CODE from the delta twin) plus the fixes above. Its id and SOURCE_NAME
---         stay. OLD_VALUES holds every changed column, so the row can be put back by hand.
+--         stay. OLD_VALUES holds every changed column, so the row can be restored by hand.
 --   Anything else: no change; 'Check pair' reports the problem.
 -- p_Force (a row left ACTIVE by a cancelled run) lets Prepare change that row anyway, as it lets Begin take its lock.
 -- CONTROL text columns carry a collation: COLLATE(col, '') before TRIM with characters and SPLIT_PART.
