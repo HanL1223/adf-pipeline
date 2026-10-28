@@ -556,13 +556,13 @@ WHERE ic.object_id = OBJECT_ID('<schema.table>') AND ic.key_ordinal = 1
 ### 8.3 Step by step
 
 **Step 0. One-time setup (same for all three).**
-1. Create the container and grant access (section 3.1).
-2. Load the four pipelines (section 3.2).
-3. **SourceConfig.** In the factory you will use, the global parameter **SourceConfig** must have the keys **STOCKDB**, **ILS** and **SCAX2012**, each pointing at the database you intend to prime from (ADF → Manage → Global parameters).
-4. **Grants.** Run sql/01 (section 3.3), then `SHOW GRANTS ON TABLE EDP_DEV.BRONZE.<T>;` for **each** of DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM. Expect SELECT and TRUNCATE for DEV_ACCOUNT_ROLE_DATA_INGESTION, directly or through its database role.
-5. **Run group.** Run the DATA_PRIME query in section 2. Only initial rows may appear.
-6. **Delta triggers.** For each table, confirm a started trigger runs its delta row (worksheet row "Delta trigger and schedule", both factories). In this repo (the new factory): STOCKDB at 06:00 and ILS at 16:20 (DI_RDBMS, SCMergeCO), plus "StockDB/ILS - Daily delta load" at 04:05/04:15 (E_RDBMS, GRP:INCREMENTAL), and none for SCAX2012. Check the old factory before requesting one.
-7. **Factory.** Use the old factory (cwr-ase-edp-dev-adf, `adf_old_json`) until the new-factory gate G1–G5 passes (section 3.1).
+1. **Factory.** Use the old factory (cwr-ase-edp-dev-adf, `adf_old_json`) until the new-factory gate G1–G5 passes (section 3.1).
+2. Create the container and grant access (section 3.1).
+3. Load the four pipelines (section 3.2).
+4. **SourceConfig.** In the factory you will use, the global parameter **SourceConfig** must have the keys **STOCKDB**, **ILS** and **SCAX2012**, each pointing at the database you intend to prime from (ADF → Manage → Global parameters).
+5. **Grants.** Run sql/01 (section 3.3), then `SHOW GRANTS ON TABLE EDP_DEV.BRONZE.<T>;` for **each** of DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM. Expect SELECT and TRUNCATE for DEV_ACCOUNT_ROLE_DATA_INGESTION, directly or through its database role.
+6. **Run group.** Run the DATA_PRIME query in section 2. Only initial rows may appear.
+7. **Delta triggers.** For each table, confirm a started trigger runs its delta row (worksheet row "Delta trigger and schedule", both factories). In this repo (the new factory): STOCKDB at 06:00 and ILS at 16:20 (DI_RDBMS, SCMergeCO), plus "StockDB/ILS - Daily delta load" at 04:05/04:15 (E_RDBMS, GRP:INCREMENTAL), and none for SCAX2012. Check the old factory before requesting one.
 
 **Step 1. Read-only checks (once per table).** Do section 5 A for each table, then:
 - Fill in the *from …* cells in 8.1.
@@ -576,9 +576,9 @@ Expected result of sql/02 B per table:
 | sql/02 B shows | 768 with `LIVE_ROW_NEEDS_CONVERT (JSON build)` | **no row** (no initial row yet) | **no row** (no initial row yet) |
 | If it shows something else | — | Follow the table in section 5 A1 | Follow the table in section 5 A1 |
 
-**Step 2. Test primes (section 5 B).** One run can test all three, two at a time. p_Rows_Per_File applies to the whole run, so 50000 is used for all of them.
+**Step 2. Test primes (section 5 B).** One run can test all three, two at a time. p_Rows_Per_File applies to the whole run: 50000 by default, but see below for large tables.
 
-First, count each table's rows in the test window (A4 with a `WHERE <wm> >= '2026-09-26' AND <wm> < '2026-10-26'`). Inventory tables can change millions of rows a month. If 50000 gives more than about 10 files for a table, test that table in its own run with a larger p_Rows_Per_File, or with a shorter window.
+First, count each table's rows in the test window (A4 with a `WHERE <wm> >= '2026-09-26' AND <wm> < '2026-10-26'`; for an integer watermark, use the integer bounds). Inventory tables can change millions of rows a month. If 50000 gives more than about 10 files for a table, test that table in its own run with a larger p_Rows_Per_File, or with a shorter window.
 - `p_Rows_Per_File = 50000`
 - `p_Objects` (fill in `<wm>` and `<key>` for ILS and INVENTSUM):
 
