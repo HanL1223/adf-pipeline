@@ -2,7 +2,7 @@
 
 **What it does.** It loads a table's full history ("primes" it) from on-prem SQL Server into Snowflake `EDP_DEV.BRONZE` through the ATILDA framework (`EDP_DEV.CONTROL`). It then hands the table back to its normal daily delta, with no gap and no overlap. One ADF pipeline, **PL_ATILDA_DATA_PRIME_JSON**, does everything. You give it the table name and a few column names.
 
-**How to use this file.** Read sections 1–3 once. For each table you want to prime, copy the worksheet in section 4, fill it in, and follow section 5 step by step. Sections 6–7 are reference. Section 8 is a fully worked example (DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY).
+**How to use this file.** Read sections 1–3 once. For each table you want to prime, copy the worksheet in section 4, fill it in, and follow section 5 step by step. Sections 6–7 are reference. Section 8 is the plan for the three tables being primed now (PNCH, ILS LOCATION_INVENTORY, SCAX2012 INVENTSUM), with every difference between them called out.
 
 **Framework rules.** These follow `src/cw_batch_priming/Altida_Skill.md.docx` (the "ATILDA guide"). Where this solution deliberately differs, section 9 says so and why.
 
@@ -20,7 +20,7 @@ Status: 2026-10-27. This file is the only current guide. The superseded README.m
 - [5. Procedure: prime one table](#5-procedure-prime-one-table)
 - [6. Reference: parameters and outputs](#6-reference-parameters-and-outputs)
 - [7. Reference: what changes in ATILDA](#7-reference-what-changes-in-atilda-control)
-- [8. Worked example: DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY](#8-worked-example-db_stockdb_productnetworkcostshistory)
+- [8. Current batch: PNCH, ILS LOCATION_INVENTORY, SCAX2012 INVENTSUM](#8-current-batch-pnch-ils-location_inventory-scax2012-inventsum)
 - [9. Alignment with the ATILDA guide](#9-alignment-with-the-atilda-guide)
 - [10. FAQ](#10-faq)
 - [11. Files, build and change log](#11-files-build-and-change-log)
@@ -481,48 +481,177 @@ Nothing is changed by hand. All writes run inside the pipeline as the ADF role.
 
 ---
 
-## 8. Worked example: DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY
+## 8. Current batch: PNCH, ILS LOCATION_INVENTORY, SCAX2012 INVENTSUM
 
-### Worksheet
+These are the three tables being primed now:
 
-| Item | Value |
+| Short name | STAGE_TABLE_NAME |
 |---|---|
-| `<T>` | DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY |
-| Delta row | **156**, SOURCE_NAME STOCKDB, RUN_GROUP **SCMergeCO**, ACTIVE TRUE |
-| Source object / database | dbo.ProductNetworkCostsHistory / SourceConfig['STOCKDB'] |
-| PRIMARY_KEYS | HistoryID |
-| `<wm>` | RefreshDatetime (delta snippet: `WHERE RefreshDatetime > MAX(REFRESHDATETIME)` from BRONZE) |
-| `<key>` | HistoryID |
-| Initial row | **768**, Parquet (`productnetworkcostshistory_part_%.parquet`, SQL_STATEMENT 1=1, RUN_GROUP INITIAL), so `LIVE_ROW_NEEDS_CONVERT` |
-| SOURCE_PATH | Now `PDB08/stockdb/dbo.productnetworkcostshistory/`; the conversion moves it to `db_stockdb_productnetworkcostshistory/`, so files land in `json-priming/db_stockdb_productnetworkcostshistory/` |
-| Test row | **790** (`DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST`). Its SOURCE_PATH `data_prime_test/…` is moved to `db_stockdb_productnetworkcostshistory_prime_test/` on the next test run, so files land in `json-priming/db_stockdb_productnetworkcostshistory_prime_test/` |
-| total_rows | from A4 (BRONZE held about 215M rows in Oct 2026) |
-| p_Rows_Per_File | e.g. 3000000 for about 215M rows (≈ 72 files, ≈ 2.5–6 hours of loading) |
-| enable_delta | true |
-| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time daily (as defined in this repo for the new factory; check the old factory's trigger in ADF → Manage → Triggers) |
+| **PNCH** | DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY |
+| **ILS** | DB_ILS_LOCATION_INVENTORY |
+| **INVENTSUM** | DB_SCAX2012_INVENTSUM |
 
-### Status (2026-10-27)
+Section 8.3 goes through them step by step.
+- Steps that are the same for all three are written once.
+- Every difference is in a **per-table table** or marked **Different:**.
+
+Values marked *from sql/02* or *from A4* are not in this repo. Fill them in during step 1, before anything runs.
+
+### 8.1 The three tables at a glance
+
+| | PNCH | ILS | INVENTSUM |
+|---|---|---|---|
+| Source (SourceConfig key → server / database in the new factory's repo) | STOCKDB → 192.168.29.58 / STOCKDB | ILS → 192.168.29.79 / ILS | SCAX2012 → 192.168.29.164 / SCAX2012 |
+| Source object | dbo.ProductNetworkCostsHistory | the delta row's OBJECT_NAME *from sql/02* (expected dbo.LOCATION_INVENTORY) | the delta row's OBJECT_NAME *from sql/02* (expected dbo.INVENTSUM) |
+| Delta row | **156**, RUN_GROUP SCMergeCO, ACTIVE | id, RUN_GROUP, ACTIVE *from sql/02* | id, RUN_GROUP, ACTIVE *from sql/02* |
+| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time | SCMergeCOILS- Dailyload, **16:20** Sydney time (in this repo, if the delta is in SCMergeCO) | **No trigger for SCAX2012 in this repo.** Find the delta row's RUN_GROUP (sql/02), then the ADF trigger that passes `p_Source_Name = SCAX2012` (Manage → Triggers) |
+| Initial row today | **768**, Parquet, so Prepare **converts** it | expected **none**, so Prepare **creates** it | expected **none**, so Prepare **creates** it |
+| Landing folder (SOURCE_PATH) | `json-priming/db_stockdb_productnetworkcostshistory/` | `json-priming/db_ils_location_inventory/` | `json-priming/db_scax2012_inventsum/` |
+| Test table and folder | `…_PRIME_TEST`, existing test row **790** (moved to the new folder automatically) | `DB_ILS_LOCATION_INVENTORY_PRIME_TEST`, created on the first test | `DB_SCAX2012_INVENTSUM_PRIME_TEST`, created on the first test |
+| `<wm>` (window_column) | RefreshDatetime, server **local** time | the column in the delta's SQL_SNIPPET *from sql/02*; clock check in 8.2 Q2 | the column in the delta's SQL_SNIPPET *from sql/02*. AX 2012 stores datetimes in **UTC**, so 8.2 Q2 is expected to say UTC |
+| `<key>` (partition_column) | HistoryID | *from 8.2 Q3* | *from 8.2 Q3* (AX tables normally have a unique index led by RECID, bigint) |
+| PRIMARY_KEYS (duplicate check) | HistoryID | *from sql/02* | *from sql/02* |
+| total_rows / p_Rows_Per_File | ~215M (Oct 2026) / 3000000 (≈ 72 files) | *from A4* / 1,000,000 unless that gives more than 100 files | *from A4* / 1,000,000 unless that gives more than 100 files |
+
+### 8.2 Three questions to answer per table before any run
+
+**Q1. Is the delta a watermark delta, or a full reload?** Look at the delta row in sql/02 A.
+
+| What you see | Delta type | What to do |
+|---|---|---|
+| SQL_SNIPPET has `WHERE <col> > '…MAX(…)…'` read from BRONZE (ATILDA guide, recipe A2) | **Watermark delta** | Prime it. The rest of this section applies |
+| SQL_SNIPPET is only `SELECT concat('WITH (NOLOCK)',''),''` (no WHERE), usually with SQL_STATEMENT `1=1` (recipe A) | **Full reload**: every delta run already reloads the whole table | **Do not prime it.** The next delta run would replace the primed data anyway. Leave that table to its delta and tell me which one it is |
+| Anything else | — | Stop and ask before priming |
+
+**Q2. Is the watermark column in local time or UTC?** Run in SSMS against that table's source database:
+
+```sql
+SELECT MAX(<wm>) AS max_wm, SYSDATETIME() AS server_local, SYSUTCDATETIME() AS server_utc
+FROM <schema.table> WITH (NOLOCK);
+```
+
+- **max_wm close to server_local** (PNCH expected): leave `window_end` empty. The default end is the server's local clock.
+- **max_wm close to server_utc** (INVENTSUM expected): **Different:** set `"window_end"` in the live p_Objects to the current UTC time, rounded down to the minute, e.g. `"2026-10-29T03:15:00"`. Take it from `SYSUTCDATETIME()` just before you start the live run.
+  - Why: the default end is the local clock, which is 10–11 hours ahead of UTC. Rows changed during the extract would then fall inside the prime window, and the delta's `> MAX` could miss some of them.
+- **Integer watermark:** set `window_end` to `MAX(<wm>) + 1` (section 5 D1).
+
+**Q3. Which partition column?** Run in SSMS. It lists the integer columns that lead an index:
+
+```sql
+SELECT c.name AS column_name, TYPE_NAME(c.system_type_id) AS type_name, i.name AS index_name, i.type_desc, i.is_unique
+FROM sys.index_columns ic
+JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+WHERE ic.object_id = OBJECT_ID('<schema.table>') AND ic.key_ordinal = 1
+  AND TYPE_NAME(c.system_type_id) IN ('tinyint', 'smallint', 'int', 'bigint');
+```
+
+- Pick the CLUSTERED one if there is one, otherwise a unique one.
+- If no rows come back, leave `partition_column` out. The table is then extracted as one file in one stream, which is fine below a few million rows only.
+
+### 8.3 Step by step
+
+**Step 0. One-time setup (same for all three).**
+1. Create the container and grant access (section 3.1).
+2. Load the four pipelines (section 3.2).
+3. **SourceConfig.** In the factory you will use, the global parameter **SourceConfig** must have the keys **STOCKDB**, **ILS** and **SCAX2012**, each pointing at the database you intend to prime from (ADF → Manage → Global parameters).
+4. **Grants.** Run sql/01 (section 3.3) for **all three** BRONZE tables: DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM.
+5. **Run group.** Run the DATA_PRIME query in section 2. Only initial rows may appear.
+
+**Step 1. Read-only checks (once per table).** Do section 5 A for each table, then:
+- Fill in the *from …* cells in 8.1.
+- Answer Q1–Q3 in 8.2.
+- Save each sql/02 output; it is that table's backup.
+
+Expected result of sql/02 B per table:
+
+| | PNCH | ILS | INVENTSUM |
+|---|---|---|---|
+| sql/02 B shows | 768 with `LIVE_ROW_NEEDS_CONVERT (JSON build)` | **no row** (no initial row yet) | **no row** (no initial row yet) |
+| If it shows something else | — | Follow the table in section 5 A1 | Follow the table in section 5 A1 |
+
+**Step 2. Test primes (section 5 B).** One run can test all three, two at a time. p_Rows_Per_File applies to the whole run, so 50000 is used for all of them.
+- `p_Rows_Per_File = 50000`
+- `p_Objects` (fill in `<wm>` and `<key>` for ILS and INVENTSUM):
+
+```json
+[{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST","source_from":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"HistoryID"},
+ {"table":"DB_ILS_LOCATION_INVENTORY_PRIME_TEST","source_from":"DB_ILS_LOCATION_INVENTORY","window_column":"<wm>","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"<key>"},
+ {"table":"DB_SCAX2012_INVENTSUM_PRIME_TEST","source_from":"DB_SCAX2012_INVENTSUM","window_column":"<wm>","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"<key>"}]
+```
+
+- **Different:** drop any table whose Q1 answer was "full reload". Drop `partition_column` for a table with no candidate in Q3.
+- **Expected Prepare row per table:**
+
+  | | PNCH | ILS | INVENTSUM |
+  |---|---|---|---|
+  | First test run | `TEST_ROW_EXISTS`, plus "SOURCE_PATH moved to db_stockdb_productnetworkcostshistory_prime_test/" | `CREATED_TEST_ROW` | `CREATED_TEST_ROW` |
+  | Later test runs | `TEST_ROW_EXISTS` | `TEST_ROW_EXISTS` | `TEST_ROW_EXISTS` |
+
+- **Pass** when, for every object, End shows STATUS OK, ROWS_COPIED = BRONZE_ROWS and BATCH_MISMATCH empty.
+- If one object fails, the others still finish. Fix it and re-test that object alone.
+
+**Step 3. Test checks and cleanup (section 5 B3–B4, same for all three).**
+1. Run the B3 column and text checks per table, using each table's own name.
+2. Then run PL_ATILDA_DATA_PRIME_JSON_CLEANUP_TEST with:
+   `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST","DB_ILS_LOCATION_INVENTORY_PRIME_TEST","DB_SCAX2012_INVENTSUM_PRIME_TEST"]`
+
+**Step 4. Backups (section 5 C1–C2).** Take a clone and baseline count, and check the auto LOAD_META, **per table**. For ILS and INVENTSUM, LOAD_META for the initial row does not exist yet; ATILDA creates it on the first load.
+
+**Step 5. Live dry runs (section 5 C3).**
+1. Use the D1 parameters below with `"window_start":"2999-01-02","window_end":"2999-01-01"` added, and `p_Prepare_Live_Row = false`. One run can carry all three.
+2. **Expected:**
+
+   | | PNCH | ILS | INVENTSUM |
+   |---|---|---|---|
+   | Check prepare | fails with `LIVE_ROW_NEEDS_CONVERT` | fails with `LIVE_ROW_MISSING` | fails with `LIVE_ROW_MISSING` |
+
+3. Nothing changes. Remove the two window keys before step 6.
+
+**Step 6. Live primes: one table per run.** Prime them separately. Their p_Rows_Per_File and delta schedules differ, and a failure then leaves only one delta OFF. Suggested order: **ILS, then INVENTSUM, then PNCH** (largest last), each after the previous one has passed step 7.
+
+Same for all three:
+
+| Parameter | Value |
+|---|---|
+| p_Window_Start | `""`, with no `window_start` in p_Objects (full history) |
+| p_Window_End | `""` |
+| p_Prepare_Live_Row | `true` |
+| p_Enable_Delta | `true`. Use `"enable_delta":"false"` in p_Objects only if that delta row is inactive on purpose (sql/02) |
+| p_Force | `false` |
+| p_Landing_Container | `json-priming` |
+| p_Staging_Container | `snowflake-data` (old factory only) |
+
+Different per table:
+
+| | PNCH | ILS | INVENTSUM |
+|---|---|---|---|
+| p_Objects | `[{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID"}]` | `[{"table":"DB_ILS_LOCATION_INVENTORY","window_column":"<wm>","partition_column":"<key>"}]`, plus `"window_end":"<UTC now>"` only if Q2 said UTC | `[{"table":"DB_SCAX2012_INVENTSUM","window_column":"<wm>","partition_column":"<key>","window_end":"<UTC now, rounded down to the minute>"}]` (drop window_end only if Q2 said local) |
+| p_Rows_Per_File | 3000000 (or from A4) | from 8.1 | from 8.1 |
+| p_Batch_ID | `PRIME_LIVE_PNCH_<yyyymmdd>` | `PRIME_LIVE_ILS_LOCINV_<yyyymmdd>` | `PRIME_LIVE_INVENTSUM_<yyyymmdd>` |
+| When to start | After the 06:00 Sydney delta run has finished, early enough to finish (2.5–6 h of loading plus the extract) before the next 06:00 run | After the 16:20 Sydney ILS delta run has finished | Outside the SCAX2012 delta's schedule (from 8.1) |
+| Expected Prepare row | `LIVE_ROW_CONVERTED`. 768 becomes `productnetworkcostshistory_part_%.json`, JSON, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME, SOURCE_PATH `db_stockdb_productnetworkcostshistory/` | `CREATED_LIVE_ROW`: a new inactive JSON initial row, SOURCE_PATH `db_ils_location_inventory/` | `CREATED_LIVE_ROW`: a new inactive JSON initial row, SOURCE_PATH `db_scax2012_inventsum/` |
+| Expected WINDOW_FILTER | `AND [RefreshDatetime] < CONVERT(datetime…, '<server local now>', 126)` | as for PNCH if local; the UTC value you set if UTC | `AND [<wm>] < CONVERT(…, '<the UTC value you set>', 126)` |
+
+Every other activity output is as in section 5 D2.
+
+**Step 7. After each live prime (section 5 E, per table).**
+1. Run sql/03 with that table's `stage_table`, `run_id` and `wm_col`.
+2. Compare with its baseline.
+3. Confirm its next delta run completes:
+   - PNCH: delta 156, the next 06:00 run;
+   - ILS: its delta row, the next 16:20 run;
+   - INVENTSUM: its delta row, its next scheduled run.
+4. Only then start the next table.
+
+### 8.4 PNCH status and leftovers
 
 - Test run 4 passed in the old factory: 163,204 rows, one file.
-- A longer test (2024-07-01 to 2026-10-26, 50,000 rows per file) was run with the earlier build, which loaded files 4 at a time.
-- **Run section 5 B again with the current build before going live.** The one-at-a-time load and the `json-priming` landing container are new.
-- The old landing folders in `snowflake-data` (`data_prime_test/` and 768's `PDB08/stockdb/dbo.productnetworkcostshistory/`) are no longer used by the prime and can be deleted by hand once the new layout has passed a test.
+- A longer test, 2024-07-01 to 2026-10-26 at 50,000 rows per file, ran with the earlier build.
+- The one-at-a-time load and the `json-priming` landing are new, so step 2 must pass with the current build.
+- The old landing folders in `snowflake-data`, `data_prime_test/` and 768's `PDB08/stockdb/dbo.productnetworkcostshistory/`, are no longer used by the prime. Delete them by hand once step 2 has passed.
 
-### Exact parameters
-
-- **Test (B1):**
-  - `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST","source_from":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","window_start":"2026-09-26","window_end":"2026-10-26","partition_column":"HistoryID"}]`
-  - `p_Rows_Per_File = 50000`. That gives about 4 files.
-- **Cleanup (B4):** `p_Tables = ["DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY_PRIME_TEST"]`.
-- **Live dry run (C3):** `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID","window_start":"2999-01-02","window_end":"2999-01-01"}]`, `p_Prepare_Live_Row = false`. Expect `LIVE_ROW_NEEDS_CONVERT`.
-- **Live (D1):**
-  - `p_Objects = [{"table":"DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY","window_column":"RefreshDatetime","partition_column":"HistoryID"}]`
-  - `p_Window_Start = ""`, `p_Window_End = ""`, `p_Prepare_Live_Row = true`, `p_Enable_Delta = true`.
-  - `p_Rows_Per_File` from the worksheet; `p_Batch_ID = PRIME_LIVE_PNCH_<yyyymmdd>`.
-  - Start well after the delta's daily run (06:00 Sydney time), so it finishes before the next one.
-- **Expected Prepare (D2):** `LIVE_ROW_CONVERTED`. 768 becomes `productnetworkcostshistory_part_%.json`, JSON, SCHEMA_DRIFT_CODE 2, SQL_STATEMENT NULL, RUN_GROUP DATA_PRIME, SOURCE_PATH `db_stockdb_productnetworkcostshistory/`.
-
-### Other tables ready to prime
+### 8.5 Other tables ready to prime
 
 The ATILDA guide (section 10.3) lists more Parquet initial rows that were created but never run:
 
@@ -531,7 +660,7 @@ The ATILDA guide (section 10.3) lists more Parquet initial rows that were create
 - 773 SKU_SKUDETAILS
 - 779 CURRENTSOH
 
-Prepare converts each of them the same way. Start each with section 5 A.
+Prepare converts each of them as it does 768. Start each with section 5 A and the questions in 8.2.
 
 ---
 
