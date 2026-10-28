@@ -192,7 +192,7 @@ Fill this in during step A of section 5. Every later step uses these values.
 | total_rows / null_wm / min_wm / max_wm | step A4 count | |
 | p_Rows_Per_File | 1,000,000 by default. For big tables, raise it (up to about 3,000,000) to keep files at ≤ 100 | |
 | enable_delta | `true` if the delta row is ACTIVE today; `false` if it is inactive on purpose | |
-| Delta schedule to avoid | the trigger for the delta's SOURCE_NAME and RUN_GROUP (e.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time) | |
+| Delta trigger and schedule | The **started** trigger that passes the delta's SOURCE_NAME and RUN_GROUP to DI_RDBMS_Shared_SQL_Server (ADF → Manage → Triggers), e.g. SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time. It keeps the table current after the prime. Avoid running the prime across it. **If there is none, nothing loads the table after the prime**: get a trigger added before the live prime | |
 
 ---
 
@@ -329,7 +329,7 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
 | Parameter | Value | Why |
 |---|---|---|
 | p_Objects | `[{"table":"<T>","window_column":"<wm>","partition_column":"<key>"}]` (add `"enable_delta":"false"` if the worksheet says so) | No `source_from`, so this is the live table |
-| p_Window_Start | `""`, and **no** `window_start` in p_Objects | **Full history.** Begin empties the table; a start date would permanently drop every older row. Clear any value left over from a test |
+| p_Window_Start | `""`, and **no** `window_start` in p_Objects, for full history | Begin empties the table, so BRONZE ends up holding only the window. Set `"window_start"` in p_Objects (e.g. `"2024-07-01"`) only if you **deliberately** want BRONZE to start there: older rows are then gone from BRONZE, and the delta never back-fills them. Clear any value left over from a test |
 | p_Window_End | `""` | For a date or datetime watermark (recipe A2), this defaults to the source server's clock at extract start: the delta's handover point. **For an integer watermark there is no automatic end:** set `"window_end"` in p_Objects to the current `MAX(<wm>) + 1` |
 | p_Rows_Per_File | from the worksheet | |
 | p_Enable_Delta | `true` | The delta row goes back ON after a pass |
@@ -361,13 +361,14 @@ For the first three states, Prepare row's MESSAGE lists exactly what Prepare wou
    - B: all plans COMPLETED, and rows per batch match.
    - The MAX watermark is just below the WINDOW_FILTER end time (integer watermark: compare `MAX(<wm>)` with `window_end` instead).
 2. **Row count** ≈ total_rows from A4. Rows written after the end time arrive with the next delta.
-3. **Next delta run.** After its scheduled time, check:
+3. **Next delta run.** You do not run anything for this. The house delta pipeline (`DI_RDBMS_Shared_SQL_Server`, started by the trigger for the delta's SOURCE_NAME and RUN_GROUP) plans every **active** delta row, and loads only rows with `<wm> > MAX(<wm>)` in BRONZE. After its scheduled time, check:
    ```sql
    SELECT * FROM EDP_DEV.CONTROL.EXTRACT_RUN_PLAN_STATUS_VW WHERE EXTRACT_META_ID = <delta id>
    ORDER BY EXTRACT_RUN_PLAN_ID DESC LIMIT 5;   -- latest plan COMPLETED
    ```
 4. **Drop the backup clone** once you are satisfied.
 5. **Leave the initial row** as it is (inactive, DATA_PRIME). It is only used by the next prime.
+6. **Do not re-prime to stay current.** The delta keeps BRONZE up to date from here (FAQ, "How do I keep the gap small until deployment?"). Re-prime only for a clean full reload.
 
 ### F. If something fails
 
@@ -504,7 +505,7 @@ Values marked *from sql/02* or *from A4* are not in this repo. Fill them in duri
 | Source (SourceConfig key → server / database in the new factory's repo) | STOCKDB → 192.168.29.58 / STOCKDB | ILS → 192.168.29.79 / ILS | SCAX2012 → 192.168.29.164 / SCAX2012 |
 | Source object | dbo.ProductNetworkCostsHistory | the delta row's OBJECT_NAME *from sql/02* (expected dbo.LOCATION_INVENTORY) | the delta row's OBJECT_NAME *from sql/02* (expected dbo.INVENTSUM) |
 | Delta row | **156**, RUN_GROUP SCMergeCO, ACTIVE | id, RUN_GROUP, ACTIVE *from sql/02* | id, RUN_GROUP, ACTIVE *from sql/02* |
-| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time | SCMergeCOILS- Dailyload, **16:20** Sydney time (in this repo, if the delta is in SCMergeCO) | **No trigger for SCAX2012 in this repo.** Find the delta row's RUN_GROUP (sql/02), then the ADF trigger that passes `p_Source_Name = SCAX2012` (Manage → Triggers) |
+| Delta schedule to avoid | SCMergeCOSTOCKDB-DailyLoad, 06:00 Sydney time | SCMergeCOILS- Dailyload, **16:20** Sydney time (in this repo, if the delta is in SCMergeCO) | **No trigger for SCAX2012 in this repo.** Find the delta row's RUN_GROUP (sql/02), then a **started** ADF trigger that passes `p_Source_Name = SCAX2012` and that group (Manage → Triggers). **If there is none, nothing keeps INVENTSUM current after the prime**, so get one added before step 6 |
 | Initial row today | **768**, Parquet, so Prepare **converts** it | expected **none**, so Prepare **creates** it | expected **none**, so Prepare **creates** it |
 | Landing folder (SOURCE_PATH) | `json-priming/db_stockdb_productnetworkcostshistory/` | `json-priming/db_ils_location_inventory/` | `json-priming/db_scax2012_inventsum/` |
 | Test table and folder | `…_PRIME_TEST`, existing test row **790** (moved to the new folder automatically) | `DB_ILS_LOCATION_INVENTORY_PRIME_TEST`, created on the first test | `DB_SCAX2012_INVENTSUM_PRIME_TEST`, created on the first test |
@@ -557,6 +558,7 @@ WHERE ic.object_id = OBJECT_ID('<schema.table>') AND ic.key_ordinal = 1
 3. **SourceConfig.** In the factory you will use, the global parameter **SourceConfig** must have the keys **STOCKDB**, **ILS** and **SCAX2012**, each pointing at the database you intend to prime from (ADF → Manage → Global parameters).
 4. **Grants.** Run sql/01 (section 3.3) for **all three** BRONZE tables: DB_STOCKDB_PRODUCTNETWORKCOSTSHISTORY, DB_ILS_LOCATION_INVENTORY and DB_SCAX2012_INVENTSUM.
 5. **Run group.** Run the DATA_PRIME query in section 2. Only initial rows may appear.
+6. **Delta triggers.** For each table, confirm a started trigger runs its delta row (worksheet row "Delta trigger and schedule"). Today this repo has one for STOCKDB (06:00) and ILS (16:20, group SCMergeCO), and **none for SCAX2012**.
 
 **Step 1. Read-only checks (once per table).** Do section 5 A for each table, then:
 - Fill in the *from …* cells in 8.1.
@@ -614,7 +616,7 @@ Same for all three:
 
 | Parameter | Value |
 |---|---|
-| p_Window_Start | `""`, with no `window_start` in p_Objects (full history) |
+| p_Window_Start | `""`. Full history, or a deliberate `"window_start"` in p_Objects (see section 5 D1) |
 | p_Window_End | `""` |
 | p_Prepare_Live_Row | `true` |
 | p_Enable_Delta | `true`. Use `"enable_delta":"false"` in p_Objects only if that delta row is inactive on purpose (sql/02) |
@@ -689,7 +691,7 @@ Prepare converts each of them as it does 768. Start each with section 5 A and th
 | Section 10.3 step 11: restore the delta to its earlier flag | The delta ends ON when p_Enable_Delta is true and the checks pass | After a failed prime the delta is OFF, so "earlier flag" would keep it OFF for good. Use `"enable_delta":"false"` for deltas that are inactive on purpose |
 | PARALLEL_STAGE_LOAD_FLAG | Left at its value (new rows FALSE, the default) | Files load one at a time |
 | House pipelines log `dataRead` (bytes) as source_rows_read | Logs `rowsRead` (rows) | It is a row count |
-| Section 10.3 HistoryMonths (partial history with ClearTarget) | A live prime loads the full history only | Truncating with a start date drops older rows for good. This is a procedure rule (section 5 D1); the code does not enforce it |
+| Section 10.3 HistoryMonths (partial history with ClearTarget) | Same idea: an optional window_start, with BRONZE always truncated | A start date means BRONZE holds only that period from then on (section 5 D1) |
 | Section 10.3 DryRun parameter | No DryRun parameter. The live dry run (section 5 C3) uses an impossible window and stops before Begin | No extra parameter or code path |
 | Section 10.3 step 10: bad_ts = 0 and max_wm ≤ Cutoff | End runs the delta's own snippet and requires its MAX watermark ≥ 1901-01-01. Single unparseable values are not counted | The delta's next run depends only on that MAX |
 
@@ -715,7 +717,23 @@ If a live run fails partway, re-run the whole prime. Begin abandons the failed a
 
 **Does a prime change the delta's schedule or group?** No. Only the delta row's ACTIVE_FLAG changes during a live prime.
 
-**Can I prime only part of the history?** Only in test mode. A live prime truncates the table, so any window start loses older rows permanently (section 5 D1).
+**After the prime, do I run anything daily or weekly?** No. The existing house delta pipeline does it. DI_RDBMS_Shared_SQL_Server, started by the trigger for the delta's SOURCE_NAME and RUN_GROUP, calls `PR_CREATE_EXTRACT_RUN_PLAN(<source>, <group>)` for every **active** delta row, and loads only `<wm> > MAX(<wm>)` from BRONZE. When the source only changes weekly, most runs find nothing (NODATA, COMPLETED). Check that a started trigger exists for each table's delta (worksheet).
+
+**How do I keep the gap small until deployment, without re-priming?** Prime once with `p_Enable_Delta = true`. End turns the delta on after a passed reconcile, and from then on each delta run loads only what changed since the prime, so BRONZE stays current up to deployment. A re-prime reloads the whole window file by file, which is slow, so keep it for a clean full reload.
+- If the delta must stay off until deployment, prime with `p_Enable_Delta = false`. Its first run after it is turned on then loads everything since the prime in one go. Turning it on by hand is the one manual CONTROL exception: a CONTROL_DEV_RW holder, with sign-off (sql/03 C).
+- This only works for a **watermark** delta (section 8.2 Q1). A full-reload delta replaces the table on every run anyway.
+- If the delta's LOAD_TYPE is APPEND, each change to an existing row adds another row version in BRONZE. That is the delta's normal behaviour, not something the prime adds.
+
+**The source database is refreshed weekly (for example on Mondays). When should I prime?** After a refresh. The source is then static until the next one, so any prime in that week extracts the same rows. Two primes in the same week, for example into two Snowflake accounts, get identical data.
+
+**Can I re-use the landing files to prime the same period into another Snowflake account?** No. Re-run the whole pipeline there.
+- Data out only plans the current run's files (by RunId).
+- End needs Data in's per-batch counts to reconcile.
+- Data in clears the table's old part files before it extracts.
+
+The extract is the cheap part anyway: the time goes into the per-file ATILDA load, which happens per account either way. The other account needs its own setup once: an ADF linked service and dataset for it, its own CONTROL rows and grants, and a storage integration that can read the staging container. If both accounts' primes share a storage account, run them one after the other, or give the second its own `p_Landing_Container`.
+
+**Can I prime only part of the history (e.g. from 2024-07-01)?** Yes, with `"window_start"` in p_Objects. A live prime truncates the table first, so BRONZE then holds only that period, and older rows are not back-filled by anything (section 5 D1).
 
 ---
 
